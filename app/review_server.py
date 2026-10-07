@@ -5,8 +5,9 @@ import html
 import ipaddress
 from dataclasses import dataclass
 from functools import partial
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
@@ -37,54 +38,58 @@ class ReviewDraft:
 class ReviewSession:
     def __init__(self, draft: ReviewDraft) -> None:
         self.draft = draft
+        self._state_lock = Lock()
 
     def edit(self, path: str, content: str) -> None:
-        self._require_pending()
-        if not content.strip() or self.draft.prepared_patch is None:
-            raise ValueError("A non-empty patch preview is required for editing")
+        with self._state_lock:
+            self._require_pending()
+            if not content.strip() or self.draft.prepared_patch is None:
+                raise ValueError("A non-empty patch preview is required for editing")
 
-        updated_files: list[FilePatch] = []
-        found = False
-        for file_patch in self.draft.prepared_patch.files:
-            if file_patch.path != path:
-                updated_files.append(file_patch)
-                continue
-            found = True
-            updated_files.append(
-                FilePatch(
-                    path=file_patch.path,
-                    original_sha256=file_patch.original_sha256,
-                    before=file_patch.before,
-                    after=content,
-                    unified_diff="".join(
-                        difflib.unified_diff(
-                            file_patch.before.splitlines(keepends=True),
-                            content.splitlines(keepends=True),
-                            fromfile=path,
-                            tofile=path,
-                        )
-                    ),
+            updated_files: list[FilePatch] = []
+            found = False
+            for file_patch in self.draft.prepared_patch.files:
+                if file_patch.path != path:
+                    updated_files.append(file_patch)
+                    continue
+                found = True
+                updated_files.append(
+                    FilePatch(
+                        path=file_patch.path,
+                        original_sha256=file_patch.original_sha256,
+                        before=file_patch.before,
+                        after=content,
+                        unified_diff="".join(
+                            difflib.unified_diff(
+                                file_patch.before.splitlines(keepends=True),
+                                content.splitlines(keepends=True),
+                                fromfile=path,
+                                tofile=path,
+                            )
+                        ),
+                    )
                 )
-            )
-        if not found:
-            raise ValueError(f"Document is not part of this review: {path}")
-        self.draft.prepared_patch = PreparedPatch(files=tuple(updated_files))
-        self.draft.note = "Reviewed content saved to the draft."
+            if not found:
+                raise ValueError(f"Document is not part of this review: {path}")
+            self.draft.prepared_patch = PreparedPatch(files=tuple(updated_files))
+            self.draft.note = "Reviewed content saved to the draft."
 
     def approve(self) -> None:
-        self._require_pending()
-        if self.draft.proposal is None or self.draft.proposal.decision != "update_required":
-            raise ValueError("Only an update proposal can be approved")
-        if self.draft.prepared_patch is None:
-            raise ValueError("There is no prepared documentation patch to approve")
-        apply_approved_patch(self.draft.target_repo, self.draft.prepared_patch, approved=True)
-        self.draft.status = "approved"
-        self.draft.note = "Approved changes were applied to the configured documentation working tree."
+        with self._state_lock:
+            self._require_pending()
+            if self.draft.proposal is None or self.draft.proposal.decision != "update_required":
+                raise ValueError("Only an update proposal can be approved")
+            if self.draft.prepared_patch is None:
+                raise ValueError("There is no prepared documentation patch to approve")
+            apply_approved_patch(self.draft.target_repo, self.draft.prepared_patch, approved=True)
+            self.draft.status = "approved"
+            self.draft.note = "Approved changes were applied to the configured documentation working tree."
 
     def reject(self) -> None:
-        self._require_pending()
-        self.draft.status = "rejected"
-        self.draft.note = "Draft rejected; documentation files were not changed."
+        with self._state_lock:
+            self._require_pending()
+            self.draft.status = "rejected"
+            self.draft.note = "Draft rejected; documentation files were not changed."
 
     def _require_pending(self) -> None:
         if self.draft.status != "awaiting_review":
@@ -206,11 +211,25 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
     def _valid_origin(self) -> bool:
         origin = self.headers.get("Origin")
         if not origin:
-            return True
-        hostname = urlparse(origin).hostname
-        if hostname is None:
             return False
-        return hostname == "localhost" or _is_loopback(hostname)
+        parsed_origin = urlparse(origin)
+        if parsed_origin.scheme != "http" or parsed_origin.username or parsed_origin.password:
+            return False
+        if parsed_origin.path or parsed_origin.params or parsed_origin.query or parsed_origin.fragment:
+            return False
+        request_host = urlparse(f"//{self.headers.get('Host', '')}")
+        try:
+            origin_port = parsed_origin.port or 80
+            request_port = request_host.port or 80
+        except ValueError:
+            return False
+        hostname = parsed_origin.hostname
+        return (
+            hostname is not None
+            and _is_loopback(hostname)
+            and hostname.lower() == (request_host.hostname or "").lower()
+            and origin_port == request_port
+        )
 
     def _send_html(self, content: str, status: int = 200) -> None:
         body = content.encode("utf-8")
@@ -226,7 +245,7 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
 def serve_review(session: ReviewSession, host: str = "127.0.0.1", port: int = 8765) -> None:
     if not _is_loopback(host):
         raise ValueError("The review dashboard must bind to a loopback address")
-    server = HTTPServer((host, port), partial(ReviewRequestHandler, session=session))
+    server = ThreadingHTTPServer((host, port), partial(ReviewRequestHandler, session=session))
     print(f"Review dashboard: http://{host}:{server.server_port}/")
     try:
         server.serve_forever()

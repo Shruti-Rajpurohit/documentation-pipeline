@@ -14,6 +14,14 @@ _LOW_SIGNAL_TERMS = {
 	"and", "are", "class", "def", "else", "false", "from", "function", "import", "none",
 	"null", "return", "self", "true", "with",
 }
+_LOW_SIGNAL_FILENAME_STEMS = {
+	"app",
+	"constants",
+	"index",
+	"main",
+	"types",
+	"utils",
+}
 
 
 class DocumentSearchLimitError(RuntimeError):
@@ -104,7 +112,9 @@ def _extract_terms(changed_files: tuple[str, ...], patch: str) -> tuple[str, ...
 		terms.append(term)
 
 	for path in changed_files:
-		add_term(Path(path).stem)
+		stem = Path(path).stem
+		if stem.lower() not in _LOW_SIGNAL_FILENAME_STEMS:
+			add_term(stem)
 	for line in patch.splitlines():
 		if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
 			for term in _IDENTIFIER_PATTERN.findall(line[1:]):

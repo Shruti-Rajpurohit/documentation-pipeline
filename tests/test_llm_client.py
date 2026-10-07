@@ -76,6 +76,23 @@ class ParseProposalTests(unittest.TestCase):
         with self.assertRaises(ProposalValidationError):
             parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
 
+    def test_rejects_empty_string_in_optional_text_lists(self) -> None:
+        for field in ("uncertainties", "tests_to_run"):
+            with self.subTest(field=field):
+                with self.assertRaises(ProposalValidationError):
+                    parse_proposal(
+                        self._response(**{field: ["  "]}),
+                        self.allowed_sections,
+                        self.allowed_evidence,
+                    )
+
+    def test_rejects_empty_evidence_string(self) -> None:
+        change = json.loads(self._response())["changes"][0]
+        change["evidence"] = [""]
+
+        with self.assertRaises(ProposalValidationError):
+            parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
+
 
 if __name__ == "__main__":
     unittest.main()

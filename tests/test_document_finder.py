@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.document_finder import DocumentSearchLimitError, find_candidate_sections
+from app.document_finder import DocumentSearchLimitError, _extract_terms, find_candidate_sections
 
 
 class FindCandidateSectionsTests(unittest.TestCase):
@@ -53,6 +53,11 @@ class FindCandidateSectionsTests(unittest.TestCase):
                 "+createPayment",
                 max_files=1,
             )
+
+    def test_ignores_low_signal_filename_stems(self) -> None:
+        for stem in ("main", "utils", "index", "app", "constants", "types"):
+            with self.subTest(stem=stem):
+                self.assertEqual(_extract_terms((f"src/{stem}.py",), ""), ())
 
 
 if __name__ == "__main__":

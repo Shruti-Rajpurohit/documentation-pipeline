@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -52,10 +52,10 @@ def create_review_session(
 			status = "human_investigation"
 			note = str(error)
 		if status != "human_investigation":
-			section_counts = Counter((section.path, section.heading) for section in sections)
-			sections = [
-				section for section in sections if section_counts[(section.path, section.heading)] == 1
-			]
+			selected_sections: dict[tuple[str, str], DocumentSection] = {}
+			for section in sections:
+				selected_sections.setdefault((section.path, section.heading), section)
+			sections = list(selected_sections.values())
 			if not sections:
 				status = "human_investigation"
 				note = "No unambiguous documentation sections matched the changed identifiers."
@@ -67,6 +67,16 @@ def create_review_session(
 				for section in sections:
 					allowed_sections.setdefault(section.path, set()).add(section.heading)
 				proposal = parse_proposal(response, allowed_sections, set(analysis.evidence_refs))
+				section_lines = {
+					(section.path, section.heading): section.start_line for section in sections
+				}
+				proposal = replace(
+					proposal,
+					changes=tuple(
+						replace(change, start_line=section_lines[(change.path, change.section)])
+						for change in proposal.changes
+					),
+				)
 				if proposal.decision == "update_required":
 					prepared_patch = prepare_patch(docs_repo, proposal.changes)
 					status = "awaiting_review"

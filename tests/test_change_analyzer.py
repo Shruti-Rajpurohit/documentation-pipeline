@@ -38,10 +38,20 @@ class AnalyzeChangeTests(unittest.TestCase):
 
         self.assertEqual(result.decision, "human_investigation")
 
-    def test_unknown_file_with_source_change_needs_human_investigation(self) -> None:
+    def test_unknown_file_does_not_override_source_change(self) -> None:
         result = analyze_change(self._diff("src/api.py", "generated/output.bin"))
 
+        self.assertEqual(result.decision, "update_required")
+
+    def test_non_text_file_in_docs_folder_is_not_documentation(self) -> None:
+        result = analyze_change(self._diff("docs/architecture.png"))
+
         self.assertEqual(result.decision, "human_investigation")
+
+    def test_text_file_in_docs_folder_is_documentation(self) -> None:
+        result = analyze_change(self._diff("docs/notes.txt"))
+
+        self.assertEqual(result.decision, "no_update")
 
 
 if __name__ == "__main__":

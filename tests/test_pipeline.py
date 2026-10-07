@@ -40,7 +40,9 @@ class CreateReviewSessionTests(unittest.TestCase):
         self._git("commit", "-qam", "require currency")
         self.head = self._git("rev-parse", "HEAD").stdout.decode().strip()
         (self.docs / "docs" / "payments.md").write_text(
-            "# Payments\n\nUse `createPayment` to start a payment.\n", encoding="utf-8"
+            "## Payments\n\nUse `createPayment` to start a payment.\n\n"
+            "## Payments\n\nThis duplicate section must remain unchanged.\n",
+            encoding="utf-8",
         )
 
     def tearDown(self) -> None:
@@ -85,7 +87,10 @@ class CreateReviewSessionTests(unittest.TestCase):
         self.assertEqual(len(model.prompts), 1)
         self.assertIn("createPayment", model.prompts[0])
         self.assertIn("Pass a currency", session.draft.prepared_patch.files[0].after)
-        self.assertIn("start a payment", (self.docs / "docs" / "payments.md").read_text(encoding="utf-8"))
+        updated_doc = (self.docs / "docs" / "payments.md").read_text(encoding="utf-8")
+        self.assertIn("start a payment", session.draft.prepared_patch.files[0].before)
+        self.assertIn("This duplicate section must remain unchanged.", updated_doc)
+        self.assertEqual(session.draft.sections[0].start_line, 1)
 
     def test_missing_candidate_does_not_call_model(self) -> None:
         (self.docs / "docs" / "payments.md").write_text(

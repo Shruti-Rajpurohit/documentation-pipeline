@@ -1,9 +1,11 @@
 from functools import partial
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 import tempfile
-from threading import Thread
+from threading import Event, Thread
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 
 from app.change_analyzer import ChangeAnalysis
@@ -77,7 +79,7 @@ class ReviewSessionTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", page)
 
     def test_http_approval_endpoint_applies_draft(self) -> None:
-        server = HTTPServer(
+        server = ThreadingHTTPServer(
             ("127.0.0.1", 0),
             partial(ReviewRequestHandler, session=self.session),
         )
@@ -106,6 +108,77 @@ class ReviewSessionTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_post_without_origin_is_rejected(self) -> None:
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            partial(ReviewRequestHandler, session=self.session),
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = Request(
+                f"http://127.0.0.1:{server.server_port}/reject",
+                data=b"",
+                method="POST",
+            )
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request)
+            self.assertEqual(error.exception.code, 403)
+            error.exception.close()
+            self.assertEqual(self.session.draft.status, "awaiting_review")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_dashboard_remains_responsive_during_approval_io(self) -> None:
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            partial(ReviewRequestHandler, session=self.session),
+        )
+        server_thread = Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        approval_started = Event()
+        finish_approval = Event()
+        approval_errors: list[Exception] = []
+        base_url = f"http://127.0.0.1:{server.server_port}/"
+
+        def block_approval(*args: object, **kwargs: object) -> None:
+            approval_started.set()
+            if not finish_approval.wait(timeout=2):
+                raise TimeoutError("approval test was not released")
+
+        def send_approval() -> None:
+            request = Request(
+                f"{base_url}approve",
+                data=b"",
+                headers={"Origin": base_url.rstrip("/")},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=2):
+                    pass
+            except Exception as error:
+                approval_errors.append(error)
+
+        approval_thread = Thread(target=send_approval)
+        try:
+            with patch("app.review_server.apply_approved_patch", side_effect=block_approval):
+                approval_thread.start()
+                self.assertTrue(approval_started.wait(timeout=1))
+                with urlopen(base_url, timeout=1) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b"Documentation review", response.read())
+                finish_approval.set()
+                approval_thread.join(timeout=2)
+            self.assertFalse(approval_thread.is_alive())
+            self.assertEqual(approval_errors, [])
+        finally:
+            finish_approval.set()
+            server.shutdown()
+            server.server_close()
+            server_thread.join()
 
 
 if __name__ == "__main__":

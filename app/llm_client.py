@@ -34,6 +34,7 @@ class DocumentEdit:
 	action: EditAction
 	content: str
 	evidence: tuple[str, ...]
+	start_line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +218,8 @@ def _required_string(payload: dict[str, object], field: str) -> str:
 
 def _string_list(payload: dict[str, object], field: str) -> tuple[str, ...]:
 	value = payload.get(field)
-	if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+	if not isinstance(value, list) or any(
+		not isinstance(item, str) or not item.strip() for item in value
+	):
 		raise ProposalValidationError(f"'{field}' must be a list of strings")
-	return tuple(item.strip() for item in value if item.strip())
+	return tuple(item.strip() for item in value)

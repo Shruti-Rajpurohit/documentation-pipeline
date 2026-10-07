@@ -156,6 +156,8 @@ def _apply_edit(text: str, path: str, edit: DocumentEdit) -> str:
 		heading_line = ""
 	else:
 		matches = [heading for heading in headings if heading[2] == edit.section]
+		if edit.start_line is not None:
+			matches = [heading for heading in matches if heading[0] + 1 == edit.start_line]
 		if len(matches) != 1:
 			raise PatchError(f"Section is missing or ambiguous in {path}: {edit.section}")
 		start, _, _ = matches[0]
