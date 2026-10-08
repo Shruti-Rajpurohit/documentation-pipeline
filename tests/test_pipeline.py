@@ -1,10 +1,10 @@
 import json
 import subprocess
 import tempfile
-import unittest
 from pathlib import Path
+import unittest
 
-from app.main import create_review_session
+from app.services.pipeline import analyze_repository_change
 
 
 class FakeModel:
@@ -19,7 +19,7 @@ class FakeModel:
         return self.response
 
 
-class CreateReviewSessionTests(unittest.TestCase):
+class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
@@ -53,7 +53,7 @@ class CreateReviewSessionTests(unittest.TestCase):
             ["git", "-C", str(self.source), *arguments], check=True, capture_output=True
         )
 
-    def test_builds_reviewable_patch_from_git_diff(self) -> None:
+    async def test_builds_reviewable_patch_from_git_diff(self) -> None:
         response = json.dumps(
             {
                 "decision": "update_required",
@@ -73,7 +73,7 @@ class CreateReviewSessionTests(unittest.TestCase):
         )
         model = FakeModel(response)
 
-        session = create_review_session(
+        draft = await analyze_repository_change(
             self.source,
             self.docs,
             self.base,
@@ -83,22 +83,22 @@ class CreateReviewSessionTests(unittest.TestCase):
             model_name=model.model,
         )
 
-        self.assertEqual(session.draft.status, "awaiting_review")
+        self.assertEqual(draft.outcome, "awaiting_review")
         self.assertEqual(len(model.prompts), 1)
         self.assertIn("createPayment", model.prompts[0])
-        self.assertIn("Pass a currency", session.draft.prepared_patch.files[0].after)
+        self.assertIn("Pass a currency", draft.prepared_patch.files[0].after)
         updated_doc = (self.docs / "docs" / "payments.md").read_text(encoding="utf-8")
-        self.assertIn("start a payment", session.draft.prepared_patch.files[0].before)
+        self.assertIn("start a payment", draft.prepared_patch.files[0].before)
         self.assertIn("This duplicate section must remain unchanged.", updated_doc)
-        self.assertEqual(session.draft.sections[0].start_line, 1)
+        self.assertEqual(draft.sections[0].start_line, 1)
 
-    def test_missing_candidate_does_not_call_model(self) -> None:
+    async def test_missing_candidate_does_not_call_model(self) -> None:
         (self.docs / "docs" / "payments.md").write_text(
             "# Overview\n\nGeneral account information only.\n", encoding="utf-8"
         )
         model = FakeModel("{}")
 
-        session = create_review_session(
+        draft = await analyze_repository_change(
             self.source,
             self.docs,
             self.base,
@@ -107,7 +107,7 @@ class CreateReviewSessionTests(unittest.TestCase):
             prompt_template="$source_context $document_context",
         )
 
-        self.assertEqual(session.draft.status, "human_investigation")
+        self.assertEqual(draft.outcome, "human_investigation")
         self.assertEqual(model.prompts, [])
 
 

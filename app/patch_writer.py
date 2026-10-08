@@ -7,7 +7,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from app.llm_client import DocumentEdit
 
@@ -40,16 +40,13 @@ class PreparedPatch:
 
 def prepare_patch(repo_path: str | Path, edits: Iterable[DocumentEdit]) -> PreparedPatch:
 	root = Path(repo_path).resolve()
-	grouped_edits: dict[str, list[DocumentEdit]] = {}
-	for edit in edits:
-		_validate_relative_path(edit.path)
-		grouped_edits.setdefault(edit.path, []).append(edit)
-
-	if not grouped_edits:
+	edit_list = list(edits)
+	if not edit_list:
 		raise PatchError("Cannot prepare a patch with no document edits")
 
-	file_patches: list[FilePatch] = []
-	for relative_path, file_edits in sorted(grouped_edits.items()):
+	original_files: dict[str, tuple[str, str]] = {}
+	for relative_path in sorted({edit.path for edit in edit_list}):
+		_validate_relative_path(relative_path)
 		path = root.joinpath(*PurePosixPath(relative_path).parts)
 		if path.is_symlink() or not path.is_file() or path.suffix.lower() not in _DOCUMENTATION_EXTENSIONS:
 			raise PatchError(f"Target is not an existing documentation file: {relative_path}")
@@ -58,7 +55,34 @@ def prepare_patch(repo_path: str | Path, edits: Iterable[DocumentEdit]) -> Prepa
 			before = path.read_text(encoding="utf-8")
 		except (OSError, UnicodeError, ValueError) as error:
 			raise PatchError(f"Unable to read documentation file: {relative_path}") from error
+		original_files[relative_path] = (
+			before,
+			hashlib.sha256(before.encode("utf-8")).hexdigest(),
+		)
 
+	return prepare_patch_from_originals(original_files, edit_list)
+
+
+def prepare_patch_from_originals(
+	original_files: Mapping[str, tuple[str, str]],
+	edits: Iterable[DocumentEdit],
+) -> PreparedPatch:
+	grouped_edits: dict[str, list[DocumentEdit]] = {}
+	for edit in edits:
+		_validate_relative_path(edit.path)
+		grouped_edits.setdefault(edit.path, []).append(edit)
+	if not grouped_edits:
+		raise PatchError("Cannot prepare a patch with no document edits")
+
+	file_patches: list[FilePatch] = []
+	for relative_path, file_edits in sorted(grouped_edits.items()):
+		if relative_path not in original_files:
+			raise PatchError(f"Original review snapshot is missing: {relative_path}")
+		if PurePosixPath(relative_path).suffix.lower() not in _DOCUMENTATION_EXTENSIONS:
+			raise PatchError(f"Target is not a documentation file: {relative_path}")
+		before, original_sha256 = original_files[relative_path]
+		if hashlib.sha256(before.encode("utf-8")).hexdigest() != original_sha256:
+			raise PatchError(f"Original review snapshot hash does not match: {relative_path}")
 		after = before
 		seen_sections: set[str] = set()
 		for edit in file_edits:
@@ -78,7 +102,7 @@ def prepare_patch(repo_path: str | Path, edits: Iterable[DocumentEdit]) -> Prepa
 		file_patches.append(
 			FilePatch(
 				path=relative_path,
-				original_sha256=hashlib.sha256(before.encode("utf-8")).hexdigest(),
+				original_sha256=original_sha256,
 				before=before,
 				after=after,
 				unified_diff=diff,
