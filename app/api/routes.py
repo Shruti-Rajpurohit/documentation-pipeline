@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,7 +17,9 @@ from app.api.schemas import (
 	EditRequest,
 	RejectRequest,
 	ReviewSessionResponse,
+	ReviewSessionSummaryResponse,
 	SessionActionResponse,
+	UserResponse,
 )
 from app.db.database import get_db
 from app.db.models import (
@@ -49,6 +51,38 @@ Writer = Annotated[User, Depends(require_roles(UserRole.WRITER))]
 Editor = Annotated[User, Depends(require_roles(UserRole.WRITER, UserRole.REVIEWER))]
 Reviewer = Annotated[User, Depends(require_roles(UserRole.REVIEWER, UserRole.APPROVER))]
 Approver = Annotated[User, Depends(require_roles(UserRole.APPROVER))]
+
+
+
+
+@router.get("", response_model=list[ReviewSessionSummaryResponse])
+async def list_sessions(
+	database: Database,
+	actor: Reader,
+	status_filter: ReviewStatus | None = Query(default=None, alias="status"),
+	search: str | None = Query(default=None, min_length=1, max_length=100),
+	limit: int = Query(default=50, ge=1, le=100),
+	offset: int = Query(default=0, ge=0),
+) -> list[ReviewSessionSummaryResponse]:
+	statement = select(ReviewSessionRecord).options(selectinload(ReviewSessionRecord.creator))
+	if status_filter is not None:
+		statement = statement.where(ReviewSessionRecord.status == status_filter)
+	if search is not None:
+		search_pattern = f"%{search.strip()}%"
+		statement = statement.where(
+			or_(
+				ReviewSessionRecord.source_commit.ilike(search_pattern),
+				ReviewSessionRecord.head_commit.ilike(search_pattern),
+			)
+		)
+	statement = statement.order_by(ReviewSessionRecord.updated_at.desc()).limit(limit).offset(offset)
+	records = (await database.scalars(statement)).all()
+	return [ReviewSessionSummaryResponse.model_validate(record) for record in records]
+
+
+@router.get("/me", response_model=UserResponse)
+async def current_user(actor: Reader) -> UserResponse:
+	return UserResponse.model_validate(actor)
 
 
 @router.post("", response_model=ReviewSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -216,7 +250,7 @@ async def _load_session(database: AsyncSession, session_id: UUID) -> ReviewSessi
 		.options(
 			selectinload(ReviewSessionRecord.creator),
 			selectinload(ReviewSessionRecord.proposal).selectinload(ProposalRecord.edits),
-			selectinload(ReviewSessionRecord.audit_events),
+			selectinload(ReviewSessionRecord.audit_events).selectinload(EditAuditEvent.actor),
 		)
 		.where(ReviewSessionRecord.id == session_id)
 	)
@@ -228,7 +262,24 @@ async def _load_session(database: AsyncSession, session_id: UUID) -> ReviewSessi
 
 async def _get_session_response(database: AsyncSession, session_id: UUID) -> ReviewSessionResponse:
 	record = await _load_session(database, session_id)
-	patch_diff = "".join(
-		file_patch.unified_diff for file_patch in restore_patch_snapshot(record.patch_snapshot).files
+	prepared_patch = restore_patch_snapshot(record.patch_snapshot)
+	patch_diff = "".join(file_patch.unified_diff for file_patch in prepared_patch.files)
+	original_by_path = {file_patch.path: file_patch.before for file_patch in prepared_patch.files}
+	response = ReviewSessionResponse.model_validate(record)
+	proposal = response.proposal
+	if proposal is not None:
+		proposal = proposal.model_copy(
+			update={
+				"edits": [
+					edit.model_copy(update={"original_content": original_by_path.get(edit.file_path, "")})
+					for edit in proposal.edits
+				]
+			}
+		)
+	audit_events = [
+		event.model_copy(update={"actor_username": record.audit_events[index].actor.username})
+		for index, event in enumerate(response.audit_events)
+	]
+	return response.model_copy(
+		update={"patch_diff": patch_diff, "proposal": proposal, "audit_events": audit_events}
 	)
-	return ReviewSessionResponse.model_validate(record).model_copy(update={"patch_diff": patch_diff})

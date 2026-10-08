@@ -135,6 +135,13 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 		self.assertEqual(fetched.status_code, 200, fetched.text)
 		self.assertEqual(fetched.json()["id"], session_id)
 		self.assertEqual(fetched.json()["proposal"]["model_name"], "local-model:version")
+		self.assertIn("Old behavior.", fetched.json()["proposal"]["edits"][0]["original_content"])
+
+		listed = await self.client.get("/sessions", params={"status": "AWAITING_REVIEW", "search": "head456"})
+		self.assertEqual(listed.status_code, 200, listed.text)
+		self.assertEqual([item["id"] for item in listed.json()], [session_id])
+		current_user = await self.client.get("/sessions/me")
+		self.assertEqual(current_user.json(), {"id": 1, "username": "writer", "role": "WRITER"})
 
 		edit_id = created["proposal"]["edits"][0]["id"]
 		edit_response = await self.client.post(
@@ -145,6 +152,7 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 		self.assertEqual(edit_response.json()["proposal"]["edits"][0]["content"], "Edited by reviewer.")
 		self.assertEqual(edit_response.json()["audit_events"][0]["previous_content"], "Updated behavior.")
 		self.assertEqual(edit_response.json()["audit_events"][0]["updated_content"], "Edited by reviewer.")
+		self.assertEqual(edit_response.json()["audit_events"][0]["actor_username"], "writer")
 
 		self.actor_role = UserRole.WRITER
 		forbidden = await self.client.post(f"/sessions/{session_id}/approve")

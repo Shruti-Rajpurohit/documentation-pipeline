@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 data/*.db
+node_modules/
+.next/
+out/
+frontend/.env*.local

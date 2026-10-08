@@ -68,7 +68,7 @@ class ReviewSession(Base):
 		back_populates="session", cascade="all, delete-orphan", uselist=False
 	)
 	audit_events: Mapped[list[EditAuditEvent]] = relationship(
-		back_populates="session", cascade="all, delete-orphan"
+		back_populates="session", cascade="all, delete-orphan", order_by="EditAuditEvent.created_at"
 	)
 
 

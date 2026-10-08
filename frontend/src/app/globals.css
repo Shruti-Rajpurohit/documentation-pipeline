@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: #eef1f0;
+  --surface: #fbfcfb;
+  --surface-raised: #ffffff;
+  --surface-muted: #e5eae8;
+  --foreground: #192321;
+  --muted: #64716d;
+  --border: #cbd4d0;
+  --border-strong: #aab8b2;
+  --accent: #136c55;
+  --accent-soft: #d9eee6;
+  --warning: #95631a;
+  --warning-soft: #f5ecd9;
+  --danger: #a33c3c;
+  --danger-soft: #f8e5e2;
+  --code-bg: #f2f5f4;
+  --diff-add: #e2f4e9;
+  --diff-add-ink: #175e36;
+  --diff-remove: #fae9e7;
+  --diff-remove-ink: #963b35;
+  --shadow: 0 12px 36px rgb(18 38 32 / 14%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: #111615;
+    --surface: #171d1b;
+    --surface-raised: #1d2522;
+    --surface-muted: #232d29;
+    --foreground: #e4ebe7;
+    --muted: #9baaa3;
+    --border: #303c37;
+    --border-strong: #46554e;
+    --accent: #71d0aa;
+    --accent-soft: #1c3b30;
+    --warning: #e6bb67;
+    --warning-soft: #392e1b;
+    --danger: #f08e81;
+    --danger-soft: #3e2422;
+    --code-bg: #121816;
+    --diff-add: #183326;
+    --diff-add-ink: #9de1b4;
+    --diff-remove: #3c2221;
+    --diff-remove-ink: #ffb5ac;
+    --shadow: 0 12px 36px rgb(0 0 0 / 35%);
+  }
+}
+
+@theme inline {
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-plex-sans), sans-serif;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+button, input, textarea, select { font: inherit; }
+button { letter-spacing: 0; }
+::selection { background: var(--accent-soft); }
+
+.mono { font-family: var(--font-plex-mono), monospace; }
+.scroll-panel { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.code-lines { font-family: var(--font-plex-mono), monospace; font-size: 12px; line-height: 1.65; white-space: pre; }
+.diff-add { color: var(--diff-add-ink); background: var(--diff-add); }
+.diff-remove { color: var(--diff-remove-ink); background: var(--diff-remove); }
+.diff-context { color: var(--muted); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .enter { animation: enter 180ms ease-out both; }
+  @keyframes enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+}

@@ -80,3 +80,7 @@ Run the standard-library test suite:
 ```sh
 python -m unittest discover -s tests -v
 ```
+
+## Frontend
+
+The Next.js dashboard lives in [`frontend/`](frontend/README.md). Install Node.js 20.9 or newer, follow that README to configure the server-side API proxy, then run `npm install` and `npm run dev` from `frontend/`.

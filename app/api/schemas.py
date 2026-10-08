@@ -50,6 +50,7 @@ class DocumentEditResponse(BaseModel):
 	section_heading: str
 	action: EditAction
 	content: str
+	original_content: str = ""
 	evidence: list[str]
 	start_line: int | None
 
@@ -74,12 +75,26 @@ class UserResponse(BaseModel):
 	role: UserRole
 
 
+
+class ReviewSessionSummaryResponse(BaseModel):
+	model_config = ConfigDict(from_attributes=True)
+
+	id: UUID
+	source_commit: str
+	head_commit: str
+	status: ReviewStatus
+	created_by: int
+	updated_at: datetime
+	creator: UserResponse
+
+
 class AuditEventResponse(BaseModel):
 	model_config = ConfigDict(from_attributes=True)
 
 	id: int
 	document_edit_id: int
 	actor_id: int
+	actor_username: str = ""
 	previous_content: str
 	updated_content: str
 	created_at: datetime
