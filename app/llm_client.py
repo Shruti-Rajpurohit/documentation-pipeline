@@ -27,6 +27,10 @@ class ProposalValidationError(ValueError):
 	pass
 
 
+class ProposalTargetValidationError(ProposalValidationError):
+	pass
+
+
 class ModelRequestError(RuntimeError):
 	pass
 
@@ -301,14 +305,17 @@ def parse_proposal(
 
 		if action == "create":
 			if path not in create_paths:
-				raise ProposalValidationError(f"New section targets an unapproved document path: {path}")
+				raise ProposalTargetValidationError(f"New section targets an unapproved document path: {path}")
 			headings = existing_sections if existing_sections is not None else allowed_sections
 			if any(existing.casefold() == section.casefold() for existing in headings.get(path, set())):
-				raise ProposalValidationError(f"New section already exists: {path} / {section}")
+				raise ProposalTargetValidationError(f"New section already exists: {path} / {section}")
 		elif path not in allowed_sections or section not in allowed_sections[path]:
-			raise ProposalValidationError(f"Change targets an unapproved document section: {path} / {section}")
+			raise ProposalTargetValidationError(
+				f"Change targets an unapproved document section: {path} / {section}"
+			)
 		if target in seen_targets:
-			raise ProposalValidationError(f"Duplicate change target: {path} / {section}")
+			raise ProposalTargetValidationError(f"Duplicate change target: {path} / {section}")
+
 		seen_targets.add(target)
 		changes.append(
 			DocumentEdit(

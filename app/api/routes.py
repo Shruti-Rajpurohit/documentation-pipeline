@@ -134,6 +134,8 @@ async def create_session(payload: CreateSessionRequest, database: Database, acto
 
 	if draft.outcome != "awaiting_review" or draft.proposal is None or draft.prepared_patch is None:
 		detail = draft.note or draft.analysis.rationale
+		if draft.outcome == "human_investigation":
+			detail = f"Human investigation required: {detail}"
 		raise HTTPException(
 			status_code=status.HTTP_409_CONFLICT,
 			detail=f"No reviewable patch was generated ({draft.outcome}): {detail}",

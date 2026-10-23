@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -146,6 +147,32 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 			model="local-model:version",
 			base_url="http://127.0.0.1:11434",
 		)
+
+	async def test_human_investigation_is_not_reported_as_model_gateway_error(self) -> None:
+		draft = replace(
+			self.draft,
+			prepared_patch=None,
+			outcome="human_investigation",
+			note="Writer proposal remained invalid after one constrained retry.",
+		)
+		with (
+			patch("app.api.routes.analyze_repository_change", new=AsyncMock(return_value=draft)),
+			patch.dict(os.environ, {"REPOSITORY_ROOTS": str(self.root)}),
+		):
+			response = await self.client.post(
+				"/sessions",
+				json={
+					"source_repo": str(self.source),
+					"docs_repo": str(self.docs),
+					"base_revision": "base123",
+					"head_revision": "head456",
+					"model_name": "local-model:version",
+				},
+			)
+
+		self.assertEqual(response.status_code, 409)
+		self.assertIn("Human investigation required", response.json()["detail"])
+		self.assertNotIn("502", response.json()["detail"])
 
 	async def test_openrouter_without_api_key_returns_service_unavailable(self) -> None:
 		with (

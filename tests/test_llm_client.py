@@ -134,6 +134,17 @@ class ParseProposalTests(unittest.TestCase):
         with self.assertRaises(ProposalValidationError):
             parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
 
+    def test_rejects_unapproved_existing_section(self) -> None:
+        change = json.loads(self._response())["changes"][0]
+        change["section"] = "Mistral AI"
+
+        with self.assertRaises(ProposalValidationError):
+            parse_proposal(
+                self._response(changes=[change]),
+                self.allowed_sections,
+                self.allowed_evidence,
+            )
+
     def test_accepts_evidence_that_does_not_match_git_refs(self) -> None:
         change = json.loads(self._response())["changes"][0]
         change["evidence"] = ["the authentication branch adds this behavior"]

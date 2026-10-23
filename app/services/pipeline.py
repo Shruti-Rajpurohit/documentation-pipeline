@@ -17,6 +17,7 @@ from app.document_finder import (
 from app.git_tools import GitDiff, collect_git_diff
 from app.llm_client import (
 	DocumentationProposal,
+	ProposalValidationError,
 	TextGenerator,
 	parse_proposal,
 )
@@ -99,6 +100,7 @@ def generate_doc_proposal(
 	allowed_evidence_refs: set[str],
 	*,
 	prompt_template: str | None = None,
+	validation_feedback: str | None = None,
 ) -> tuple[DocumentationProposal, str]:
 	template = prompt_template if prompt_template is not None else PROMPT_PATH.read_text(encoding="utf-8")
 	document_context = json.dumps(
@@ -120,21 +122,44 @@ def generate_doc_proposal(
 		source_context=impact_report,
 		document_context=document_context,
 	)
-	prompt = (
-		f"{prompt.rstrip()}\n\n"
-		"DOCUMENT_CONTEXT entries with empty content are an index only. Use their path "
-		"and heading only to choose a file for a create action; do not replace or append "
-		"to those sections. Use create only when the impact report sets "
-		'"create_new_section": true, and use a genuinely new heading.\n\n'
-		f"{_FEW_SHOT_EXAMPLES}"
-	)
-	raw_response = model_client.generate(prompt)
 	allowed_sections: dict[str, set[str]] = {}
 	existing_sections: dict[str, set[str]] = {}
 	for section in sections:
 		existing_sections.setdefault(section.path, set()).add(section.heading)
 		if section.matched_terms:
 			allowed_sections.setdefault(section.path, set()).add(section.heading)
+	allowed_targets = json.dumps(
+		{
+			"replace_or_append": [
+				{"path": path, "heading": heading}
+				for path, headings in allowed_sections.items()
+				for heading in sorted(headings)
+			],
+			"create_in_existing_files": sorted({section.path for section in sections}),
+		},
+		ensure_ascii=False,
+		indent=2,
+	)
+	prompt = (
+		f"{prompt.rstrip()}\n\n"
+		"DOCUMENT_CONTEXT entries with empty content are an index only. Use their path "
+		"and heading only to choose a file for a create action; do not replace or append "
+		"to those sections. Use create only when the impact report sets "
+		'"create_new_section": true, and use a genuinely new heading.\n\n'
+		"AUTHORIZED TARGETS (follow exactly):\n"
+		f"{allowed_targets}\n"
+		"Use replace/append only for a path and heading listed under replace_or_append. "
+		"Use create only for a genuinely new heading in a path listed under create_in_existing_files."
+	)
+	if validation_feedback is not None:
+		prompt = (
+			f"{prompt}\n\n"
+			"The previous response was rejected by proposal validation: "
+			f"{validation_feedback}\n"
+			"Return a corrected JSON proposal. Do not repeat the rejected target."
+		)
+	prompt = f"{prompt}\n\n{_FEW_SHOT_EXAMPLES}"
+	raw_response = model_client.generate(prompt)
 	return (
 		parse_proposal(
 			raw_response,
@@ -145,6 +170,43 @@ def generate_doc_proposal(
 		),
 		raw_response,
 	)
+
+
+def _generate_doc_proposal_with_retry(
+	impact_report: str,
+	sections: list[DocumentSection],
+	model_client: TextGenerator,
+	allowed_evidence_refs: set[str],
+	*,
+	prompt_template: str | None = None,
+) -> tuple[DocumentationProposal | None, str | None, str | None]:
+	try:
+		proposal, raw_response = generate_doc_proposal(
+			impact_report,
+			sections,
+			model_client,
+			allowed_evidence_refs,
+			prompt_template=prompt_template,
+		)
+		return proposal, raw_response, None
+	except ProposalValidationError as first_error:
+		try:
+			proposal, raw_response = generate_doc_proposal(
+				impact_report,
+				sections,
+				model_client,
+				allowed_evidence_refs,
+				prompt_template=prompt_template,
+				validation_feedback=str(first_error),
+			)
+			return proposal, raw_response, None
+		except ProposalValidationError as retry_error:
+			return (
+				None,
+				None,
+				"Writer proposal remained invalid after one constrained retry; "
+				f"human investigation is required. {retry_error}",
+			)
 
 
 def validate_proposal(
@@ -249,40 +311,45 @@ def build_pipeline_draft(
 					else "No unambiguous documentation sections matched the changed identifiers."
 				)
 			elif outcome != "human_investigation":
-				proposal, raw_response = generate_doc_proposal(
+				proposal, raw_response, proposal_error = _generate_doc_proposal_with_retry(
 					impact_report,
 					sections,
 					model_client,
 					set(analysis.evidence_refs),
 					prompt_template=prompt_template,
 				)
-				proposal = validate_proposal(proposal, source_diff)
-				if HALLUCINATION_NOTE in proposal.uncertainties:
+				if proposal_error is not None:
 					outcome = "human_investigation"
-					note = HALLUCINATION_NOTE
-				elif proposal.decision == "update_required":
-					section_lines = {
-						(section.path, section.heading): section.start_line for section in sections
-					}
-					proposal = replace(
-						proposal,
-						changes=tuple(
-							replace(
-								change,
-								start_line=(
-									None
-									if change.action == "create"
-									else section_lines[(change.path, change.section)]
-								),
-							)
-							for change in proposal.changes
-						),
-					)
-					prepared_patch = prepare_patch(docs_repo, proposal.changes)
-					outcome = "awaiting_review"
+					note = proposal_error
 				else:
-					outcome = proposal.decision
-					note = "The model did not propose a documentation patch."
+					assert proposal is not None
+					proposal = validate_proposal(proposal, source_diff)
+					if HALLUCINATION_NOTE in proposal.uncertainties:
+						outcome = "human_investigation"
+						note = HALLUCINATION_NOTE
+					elif proposal.decision == "update_required":
+						section_lines = {
+							(section.path, section.heading): section.start_line for section in sections
+						}
+						proposal = replace(
+							proposal,
+							changes=tuple(
+								replace(
+									change,
+									start_line=(
+										None
+										if change.action == "create"
+										else section_lines[(change.path, change.section)]
+									),
+								)
+								for change in proposal.changes
+							),
+						)
+						prepared_patch = prepare_patch(docs_repo, proposal.changes)
+						outcome = "awaiting_review"
+					else:
+						outcome = proposal.decision
+						note = "The model did not propose a documentation patch."
 
 	return PipelineDraft(
 		source_diff=source_diff,

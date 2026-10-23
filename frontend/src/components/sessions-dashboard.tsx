@@ -69,7 +69,13 @@ function CreateSessionDialog() {
       setOpen(false);
       router.push(`/sessions/${session.id}`);
     },
-    onError: (error) => toast.error("Could not create session", { description: error.message }),
+    onError: (error) => {
+      if (error instanceof ApiRequestError && error.status === 409 && error.message.includes("Human investigation required")) {
+        toast.error("Human investigation required", { description: error.message });
+        return;
+      }
+      toast.error("Could not create session", { description: error.message });
+    },
   });
 
   function update<K extends keyof CreateSessionInput>(key: K, value: CreateSessionInput[K]) {

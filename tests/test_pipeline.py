@@ -110,6 +110,62 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("This duplicate section must remain unchanged.", updated_doc)
         self.assertEqual(draft.sections[0].start_line, 1)
 
+    async def test_retries_once_with_allowed_targets_after_invalid_section(self) -> None:
+        invalid_proposal = json.loads(self._proposal())
+        invalid_proposal["changes"][0]["section"] = "Mistral AI"
+        model = FakeModel(
+            [
+                self._impact_report(),
+                json.dumps(invalid_proposal),
+                self._proposal(),
+            ]
+        )
+
+        draft = await analyze_repository_change(
+            self.source,
+            self.docs,
+            self.base,
+            self.head,
+            model,
+            prompt_template="$source_context $document_context",
+        )
+
+        self.assertEqual(draft.outcome, "awaiting_review")
+        self.assertEqual(draft.proposal.changes[0].section, "Payments")
+        self.assertEqual(len(model.prompts), 3)
+        self.assertIn("AUTHORIZED TARGETS", model.prompts[1])
+        self.assertIn('"heading": "Payments"', model.prompts[1])
+        self.assertIn("unapproved document section", model.prompts[2])
+        self.assertIn('"heading": "Payments"', model.prompts[2])
+
+    async def test_returns_human_investigation_after_second_invalid_target(self) -> None:
+        invalid_proposal = json.loads(self._proposal())
+        invalid_proposal["changes"][0]["section"] = "Mistral AI"
+        invalid_response = json.dumps(invalid_proposal)
+        model = FakeModel(
+            [
+                self._impact_report(),
+                invalid_response,
+                invalid_response,
+            ]
+        )
+
+        draft = await analyze_repository_change(
+            self.source,
+            self.docs,
+            self.base,
+            self.head,
+            model,
+            prompt_template="$source_context $document_context",
+        )
+
+        self.assertEqual(draft.outcome, "human_investigation")
+        self.assertIsNone(draft.proposal)
+        self.assertIsNone(draft.prepared_patch)
+        self.assertIn("remained invalid after one constrained retry", draft.note)
+        self.assertEqual(len(model.prompts), 3)
+        self.assertIn("unapproved document section", model.prompts[2])
+
     async def test_rejects_out_of_domain_content_for_human_investigation(self) -> None:
         model = FakeModel(
             [
