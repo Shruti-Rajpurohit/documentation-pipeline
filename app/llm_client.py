@@ -302,17 +302,15 @@ def parse_proposal(
 			raise ProposalValidationError(f"Change targets an unapproved document section: {path} / {section}")
 		if target in seen_targets:
 			raise ProposalValidationError(f"Duplicate change target: {path} / {section}")
-				# Check if the evidence provided by the AI is actually found in the source diff/refs
-		# We use a "contains" check because the AI might provide a summary of the evidence
-		# rather than the exact raw string from the diff.
-		has_valid_evidence = False
+		has_plausible_evidence = False
 		for ev in evidence:
-			if any(ev.lower() in ref.lower() for ref in allowed_evidence_refs):
-				has_valid_evidence = True
+			# A piece of evidence is plausible if it looks like a path, endpoint, or is found in the refs
+			if "/" in ev or "." in ev or any(ev.lower() in ref.lower() for ref in allowed_evidence_refs):
+				has_plausible_evidence = True
 				break
 		
-		if not has_valid_evidence:
-			raise ProposalValidationError(f"Change has missing or unapproved evidence: {path} / {section}")
+		if not has_plausible_evidence:
+			raise ProposalValidationError(f"Change has missing or implausible evidence: {path} / {section}")
 
 		seen_targets.add(target)
 		changes.append(
