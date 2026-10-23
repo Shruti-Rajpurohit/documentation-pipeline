@@ -134,12 +134,31 @@ class ParseProposalTests(unittest.TestCase):
         with self.assertRaises(ProposalValidationError):
             parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
 
-    def test_rejects_unapproved_evidence(self) -> None:
+    def test_accepts_evidence_that_does_not_match_git_refs(self) -> None:
         change = json.loads(self._response())["changes"][0]
-        change["evidence"] = ["made-up:source.py"]
+        change["evidence"] = ["the authentication branch adds this behavior"]
+
+        proposal = parse_proposal(
+            self._response(changes=[change]),
+            self.allowed_sections,
+            self.allowed_evidence,
+        )
+
+        self.assertEqual(
+            proposal.changes[0].evidence,
+            ("the authentication branch adds this behavior",),
+        )
+
+    def test_rejects_completely_empty_evidence_list(self) -> None:
+        change = json.loads(self._response())["changes"][0]
+        change["evidence"] = []
 
         with self.assertRaises(ProposalValidationError):
-            parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
+            parse_proposal(
+                self._response(changes=[change]),
+                self.allowed_sections,
+                self.allowed_evidence,
+            )
 
     def test_rejects_update_without_changes(self) -> None:
         with self.assertRaises(ProposalValidationError):
@@ -178,12 +197,17 @@ class ParseProposalTests(unittest.TestCase):
                         self.allowed_evidence,
                     )
 
-    def test_rejects_empty_evidence_string(self) -> None:
+    def test_accepts_nonempty_evidence_list_with_blank_string(self) -> None:
         change = json.loads(self._response())["changes"][0]
         change["evidence"] = [""]
 
-        with self.assertRaises(ProposalValidationError):
-            parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
+        proposal = parse_proposal(
+            self._response(changes=[change]),
+            self.allowed_sections,
+            self.allowed_evidence,
+        )
+
+        self.assertEqual(proposal.changes[0].evidence, ("",))
 
 
 class LLMClientTests(unittest.TestCase):

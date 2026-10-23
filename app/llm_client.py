@@ -289,7 +289,14 @@ def parse_proposal(
 		if not isinstance(action, str) or action not in {"replace", "append", "create"}:
 			raise ProposalValidationError("Change action must be 'replace', 'append', or 'create'")
 		content = _required_string(raw_change, "content")
-		evidence = _string_list(raw_change, "evidence")
+		raw_evidence = raw_change.get("evidence")
+		if not isinstance(raw_evidence, list):
+			raise ProposalValidationError("'evidence' must be a list of strings")
+		if not raw_evidence:
+			raise ProposalValidationError(f"Change has no evidence: {path} / {section}")
+		if any(not isinstance(item, str) for item in raw_evidence):
+			raise ProposalValidationError("'evidence' must be a list of strings")
+		evidence = tuple(item.strip() for item in raw_evidence)
 		target = (path, section)
 
 		if action == "create":
@@ -302,16 +309,6 @@ def parse_proposal(
 			raise ProposalValidationError(f"Change targets an unapproved document section: {path} / {section}")
 		if target in seen_targets:
 			raise ProposalValidationError(f"Duplicate change target: {path} / {section}")
-		has_plausible_evidence = False
-		for ev in evidence:
-			# A piece of evidence is plausible if it looks like a path, endpoint, or is found in the refs
-			if "/" in ev or "." in ev or any(ev.lower() in ref.lower() for ref in allowed_evidence_refs):
-				has_plausible_evidence = True
-				break
-		
-		if not has_plausible_evidence:
-			raise ProposalValidationError(f"Change has missing or implausible evidence: {path} / {section}")
-
 		seen_targets.add(target)
 		changes.append(
 			DocumentEdit(
