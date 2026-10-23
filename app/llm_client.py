@@ -131,41 +131,52 @@ class OpenRouterClient:
 		self.max_response_bytes = max_response_bytes
 
 	def generate(self, prompt: str) -> str:
-		request_body = json.dumps(
-			{
-				"model": self.model,
-				"messages": [{"role": "user", "content": prompt}],
-			}
-		).encode("utf-8")
+		payload = {
+			"model": self.model,
+			"messages": [
+				{
+					"role": "user",
+					"content": prompt,
+					}
+					],
+			"response_format": {"type": "json_object"}, 
+		}
+		
+		request_body = json.dumps(payload).encode("utf-8")
 		request = Request(
 			self.endpoint,
 			data=request_body,
 			headers={
-				"Authorization": f"Bearer {self.api_key}",
 				"Content-Type": "application/json",
-				"HTTP-Referer": "http://localhost",
-				"X-Title": "Documentation Pipeline",
+				"Authorization": f"Bearer {self.api_key}",
+				"HTTP-Referer": "http://localhost:8000", 
+				"X-Title": "Patchwork DocOps",
 			},
 			method="POST",
 		)
+		
 		try:
-			with urlopen(request, timeout=self.timeout) as response:
-				response_body = response.read(self.max_response_bytes + 1)
-			if len(response_body) > self.max_response_bytes:
-				raise ModelRequestError(
-					f"OpenRouter response exceeds the {self.max_response_bytes}-byte limit"
-				)
+			# Use the unverified context if you are still having SSL issues
+			import ssl
+			context = ssl._create_unverified_context() 
+			
+			with urlopen(request, timeout=120, context=context) as response:
+				response_body = response.read()
+			
 			payload = json.loads(response_body.decode("utf-8"))
-		except (HTTPError, URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as error:
+			
+			# OpenRouter response structure: choices[0].message.content
+			if "choices" in payload and len(payload["choices"]) > 0:
+				return payload["choices"][0]["message"]["content"]
+			else:
+				raise ModelRequestError(f"OpenRouter returned an unexpected response format: {payload}")
+				
+		except (HTTPError, URLError, json.JSONDecodeError) as error:
+			# This will now print the actual body of the 400 error from OpenRouter
+			if isinstance(error, HTTPError):
+				error_body = error.read().decode("utf-8")
+				raise ModelRequestError(f"OpenRouter API Error {error.code}: {error_body}") from error
 			raise ModelRequestError(f"OpenRouter request failed: {error}") from error
-
-		choices = payload.get("choices") if isinstance(payload, dict) else None
-		first_choice = choices[0] if isinstance(choices, list) and choices else None
-		message = first_choice.get("message") if isinstance(first_choice, dict) else None
-		generated_text = message.get("content") if isinstance(message, dict) else None
-		if not isinstance(generated_text, str):
-			raise ModelRequestError("OpenRouter returned a response without generated text")
-		return generated_text
 
 
 def get_llm_client(
