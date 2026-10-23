@@ -66,10 +66,11 @@ def analyze_change_impact(source_diff: GitDiff, model_client: TextGenerator) -> 
 	prompt = f"""\
 You are a code-change analyst. Inspect only the source diff below and extract facts.
 Do not write user-facing documentation or infer behavior not established by the diff.
-Return only a JSON object with exactly these keys:
+Return a JSON object containing these fields; extra fields are allowed:
 - "changed_functions_endpoints": an array naming each changed function or endpoint; use [] if none.
 - "technical_summary": one concise, technical, factual summary of the change.
 - "documentation_sections_to_update": an array of documentation topics that the diff requires updating.
+The first two fields are required. "documentation_sections_to_update" is optional.
 
 SOURCE DIFF:
 {source_diff.patch}
@@ -242,23 +243,36 @@ def _parse_impact_report(response_text: str) -> ImpactReport:
 		payload = json.loads(response_text)
 	except json.JSONDecodeError as error:
 		raise ImpactReportValidationError("Impact report must be valid JSON") from error
-	if not isinstance(payload, dict) or set(payload) != {
-		"changed_functions_endpoints",
-		"technical_summary",
-		"documentation_sections_to_update",
-	}:
-		raise ImpactReportValidationError("Impact report must contain exactly the required fields")
+	if not isinstance(payload, dict):
+		raise ImpactReportValidationError("Impact report must be a JSON object")
 
-	changed_functions = _string_tuple(payload, "changed_functions_endpoints")
-	technical_summary = payload.get("technical_summary")
+	changed_functions = _required_impact_string_tuple(
+		payload,
+		"changed_functions_endpoints",
+		"changed_functions",
+	)
+	technical_summary = payload.get("technical_summary", payload.get("impact_summary"))
 	if not isinstance(technical_summary, str) or not technical_summary.strip():
 		raise ImpactReportValidationError("Impact report technical_summary must be a non-empty string")
-	documentation_sections = _string_tuple(payload, "documentation_sections_to_update")
+	documentation_sections = _string_tuple(
+		payload,
+		"documentation_sections_to_update",
+	) if "documentation_sections_to_update" in payload else ()
 	return ImpactReport(
 		changed_functions_endpoints=changed_functions,
 		technical_summary=technical_summary.strip(),
 		documentation_sections_to_update=documentation_sections,
 	)
+
+
+def _required_impact_string_tuple(
+	payload: dict[str, object],
+	field: str,
+	alias: str,
+) -> tuple[str, ...]:
+	if field not in payload and alias not in payload:
+		raise ImpactReportValidationError(f"Impact report must include '{field}'")
+	return _string_tuple(payload, field if field in payload else alias)
 
 
 def _string_tuple(payload: dict[str, object], field: str) -> tuple[str, ...]:

@@ -4,7 +4,12 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from app.services.pipeline import HALLUCINATION_NOTE, analyze_repository_change
+from app.services.pipeline import (
+	HALLUCINATION_NOTE,
+	ImpactReportValidationError,
+	_parse_impact_report,
+	analyze_repository_change,
+)
 
 
 class FakeModel:
@@ -61,6 +66,38 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
                 "documentation_sections_to_update": ["Payments API"],
             }
         )
+
+    def test_impact_report_ignores_extra_fields_and_defaults_optional_sections(self) -> None:
+        report = _parse_impact_report(
+            json.dumps(
+                {
+                    "changed_functions_endpoints": ["createPayment"],
+                    "technical_summary": "createPayment now requires currency.",
+                    "analyst_confidence": 0.95,
+                }
+            )
+        )
+
+        self.assertEqual(report.changed_functions_endpoints, ("createPayment",))
+        self.assertEqual(report.technical_summary, "createPayment now requires currency.")
+        self.assertEqual(report.documentation_sections_to_update, ())
+
+    def test_impact_report_accepts_alternate_required_field_names(self) -> None:
+        report = _parse_impact_report(
+            json.dumps(
+                {
+                    "changed_functions": ["createPayment"],
+                    "impact_summary": "createPayment now requires currency.",
+                }
+            )
+        )
+
+        self.assertEqual(report.changed_functions_endpoints, ("createPayment",))
+        self.assertEqual(report.technical_summary, "createPayment now requires currency.")
+
+    def test_impact_report_still_requires_core_fields(self) -> None:
+        with self.assertRaises(ImpactReportValidationError):
+            _parse_impact_report(json.dumps({"changed_functions_endpoints": []}))
 
     def _proposal(self, content: str = "Pass a currency when calling `createPayment`.") -> str:
         return json.dumps(
