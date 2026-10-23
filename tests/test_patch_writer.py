@@ -37,6 +37,7 @@ class PatchWriterTests(unittest.TestCase):
         self.assertIn("Keep this.", prepared.files[0].after)
 
     def test_create_appends_new_heading_and_content(self) -> None:
+        before = self.doc.read_text(encoding="utf-8")
         edit = DocumentEdit(
             path="docs/api.md",
             section="Forgot Password",
@@ -51,6 +52,42 @@ class PatchWriterTests(unittest.TestCase):
         self.assertIn("## Forgot Password\n\nUse the password reset flow.", prepared.files[0].after)
         self.assertIn("Keep this.", prepared.files[0].after)
         self.assertTrue(prepared.files[0].after.endswith("\n"))
+        self.assertIn("\n\n## Forgot Password", prepared.files[0].after)
+        self.assertEqual(prepared.files[0].before, before)
+        self.assertIn("+## Forgot Password", prepared.files[0].unified_diff)
+        self.assertEqual(self.doc.read_text(encoding="utf-8"), before)
+
+    def test_create_replaces_matching_existing_heading(self) -> None:
+        edit = DocumentEdit(
+            path="docs/api.md",
+            section="other",
+            action="create",
+            content="Replacement content.",
+            evidence=("head:src/api.py",),
+        )
+
+        prepared = prepare_patch(self.repo, [edit])
+
+        self.assertIn("## Other\n\nReplacement content.", prepared.files[0].after)
+        self.assertNotIn("Keep this.", prepared.files[0].after)
+        self.assertIn("-Keep this.", prepared.files[0].unified_diff)
+        self.assertIn("+Replacement content.", prepared.files[0].unified_diff)
+
+    def test_approved_create_writes_new_section(self) -> None:
+        edit = DocumentEdit(
+            path="docs/api.md",
+            section="Forgot Your Password?",
+            action="create",
+            content="Use the password reset flow.",
+            evidence=("head:src/api.py",),
+        )
+        prepared = prepare_patch(self.repo, [edit])
+
+        apply_approved_patch(self.repo, prepared, approved=True)
+
+        result = self.doc.read_text(encoding="utf-8")
+        self.assertIn("## Forgot Your Password?\n\nUse the password reset flow.", result)
+        self.assertIn("Keep this.", result)
 
     def test_apply_requires_explicit_approval(self) -> None:
         prepared = prepare_patch(self.repo, [self._edit()])

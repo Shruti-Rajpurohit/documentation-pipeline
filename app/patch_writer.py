@@ -5,7 +5,7 @@ import hashlib
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
@@ -88,6 +88,8 @@ def prepare_patch_from_originals(
 		for edit in file_edits:
 			if edit.section in seen_sections:
 				raise PatchError(f"Multiple edits target the same section: {relative_path} / {edit.section}")
+			if edit.action not in {"replace", "append", "create"}:
+				raise PatchError(f"Unsupported document edit action: {edit.action}")
 			seen_sections.add(edit.section)
 			after = _apply_edit(after, relative_path, edit)
 
@@ -174,7 +176,18 @@ def _apply_edit(text: str, path: str, edit: DocumentEdit) -> str:
 			headings.append((index, len(match.group(1)), match.group(2).strip()))
 
 	if edit.action == "create":
-		return _append_new_section(text, path, edit, headings)
+		existing = next(
+			(
+				heading
+				for _, _, heading in headings
+				if heading.casefold() == edit.section.strip().casefold()
+			),
+			None,
+		)
+		if existing is not None:
+			edit = replace(edit, action="replace", section=existing)
+		else:
+			return _append_new_section(text, path, edit, headings)
 
 	if not headings:
 		if edit.section != Path(path).name:
