@@ -43,6 +43,48 @@ class ParseProposalTests(unittest.TestCase):
         self.assertEqual(proposal.decision, "no_update")
         self.assertEqual(proposal.changes, ())
 
+    def test_normalizes_update_decision_synonyms(self) -> None:
+        for synonym in ("update_required", "update", "required", "yes", "needed", "update_needed"):
+            with self.subTest(decision=synonym):
+                proposal = parse_proposal(
+                    self._response(decision=synonym),
+                    self.allowed_sections,
+                    self.allowed_evidence,
+                )
+
+                self.assertEqual(proposal.decision, "update_required")
+
+    def test_normalizes_non_update_decision_synonyms(self) -> None:
+        for synonym, canonical in (
+            ("no_update", "no_update"),
+            ("no", "no_update"),
+            ("none", "no_update"),
+            ("not_required", "no_update"),
+            ("no_update_needed", "no_update"),
+            ("human_investigation", "human_investigation"),
+            ("investigate", "human_investigation"),
+            ("uncertain", "human_investigation"),
+            ("unknown", "human_investigation"),
+            ("human", "human_investigation"),
+        ):
+            with self.subTest(decision=synonym):
+                proposal = parse_proposal(
+                    self._response(decision=synonym, changes=[]),
+                    self.allowed_sections,
+                    self.allowed_evidence,
+                )
+
+                self.assertEqual(proposal.decision, canonical)
+
+    def test_normalizes_decision_whitespace_case_and_spaces(self) -> None:
+        proposal = parse_proposal(
+            self._response(decision="  UPDATE REQUIRED  "),
+            self.allowed_sections,
+            self.allowed_evidence,
+        )
+
+        self.assertEqual(proposal.decision, "update_required")
+
     def test_rejects_unapproved_document_path(self) -> None:
         change = json.loads(self._response())["changes"][0]
         change["path"] = "../../README.md"
@@ -68,6 +110,14 @@ class ParseProposalTests(unittest.TestCase):
     def test_rejects_non_string_decision(self) -> None:
         with self.assertRaises(ProposalValidationError):
             parse_proposal(self._response(decision=[]), self.allowed_sections, self.allowed_evidence)
+
+    def test_rejects_unsupported_decision(self) -> None:
+        with self.assertRaises(ProposalValidationError):
+            parse_proposal(
+                self._response(decision="not_a_decision"),
+                self.allowed_sections,
+                self.allowed_evidence,
+            )
 
     def test_rejects_non_string_action(self) -> None:
         change = json.loads(self._response())["changes"][0]

@@ -4,19 +4,19 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from app.services.pipeline import analyze_repository_change
+from app.services.pipeline import HALLUCINATION_NOTE, analyze_repository_change
 
 
 class FakeModel:
     model = "fake-model"
 
-    def __init__(self, response: str) -> None:
-        self.response = response
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
         self.prompts: list[str] = []
 
     def generate(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        return self.response
+        return self.responses.pop(0)
 
 
 class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
@@ -53,8 +53,17 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
             ["git", "-C", str(self.source), *arguments], check=True, capture_output=True
         )
 
-    async def test_builds_reviewable_patch_from_git_diff(self) -> None:
-        response = json.dumps(
+    def _impact_report(self) -> str:
+        return json.dumps(
+            {
+                "changed_functions_endpoints": ["createPayment"],
+                "technical_summary": "createPayment now requires currency.",
+                "documentation_sections_to_update": ["Payments API"],
+            }
+        )
+
+    def _proposal(self, content: str = "Pass a currency when calling `createPayment`.") -> str:
+        return json.dumps(
             {
                 "decision": "update_required",
                 "rationale": "The function now requires currency.",
@@ -63,7 +72,7 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
                         "path": "docs/payments.md",
                         "section": "Payments",
                         "action": "replace",
-                        "content": "Pass a currency when calling `createPayment`.",
+                        "content": content,
                         "evidence": [f"{self.head}:payments.py"],
                     }
                 ],
@@ -71,7 +80,9 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
                 "tests_to_run": ["documentation build"],
             }
         )
-        model = FakeModel(response)
+
+    async def test_builds_reviewable_patch_from_git_diff(self) -> None:
+        model = FakeModel([self._impact_report(), self._proposal()])
 
         draft = await analyze_repository_change(
             self.source,
@@ -84,19 +95,25 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(draft.outcome, "awaiting_review")
-        self.assertEqual(len(model.prompts), 1)
+        self.assertEqual(len(model.prompts), 2)
         self.assertIn("createPayment", model.prompts[0])
+        self.assertIn('"technical_summary": "createPayment now requires currency."', model.prompts[1])
+        self.assertIn("User can now upload up to 3 images for analysis.", model.prompts[1])
+        self.assertIn("Added password reset flow via email link.", model.prompts[1])
+        self.assertIn("Users can now maintain multiple independent chat threads.", model.prompts[1])
         self.assertIn("Pass a currency", draft.prepared_patch.files[0].after)
         updated_doc = (self.docs / "docs" / "payments.md").read_text(encoding="utf-8")
         self.assertIn("start a payment", draft.prepared_patch.files[0].before)
         self.assertIn("This duplicate section must remain unchanged.", updated_doc)
         self.assertEqual(draft.sections[0].start_line, 1)
 
-    async def test_missing_candidate_does_not_call_model(self) -> None:
-        (self.docs / "docs" / "payments.md").write_text(
-            "# Overview\n\nGeneral account information only.\n", encoding="utf-8"
+    async def test_rejects_out_of_domain_content_for_human_investigation(self) -> None:
+        model = FakeModel(
+            [
+                self._impact_report(),
+                self._proposal("Added tax calculations for `createPayment`."),
+            ]
         )
-        model = FakeModel("{}")
 
         draft = await analyze_repository_change(
             self.source,
@@ -108,7 +125,29 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(draft.outcome, "human_investigation")
-        self.assertEqual(model.prompts, [])
+        self.assertEqual(draft.note, HALLUCINATION_NOTE)
+        self.assertIsNone(draft.prepared_patch)
+        self.assertEqual(draft.proposal.decision, "human_investigation")
+        self.assertEqual(draft.proposal.changes, ())
+        self.assertIn(HALLUCINATION_NOTE, draft.proposal.uncertainties)
+
+    async def test_missing_candidate_does_not_call_model(self) -> None:
+        (self.docs / "docs" / "payments.md").write_text(
+            "# Overview\n\nGeneral account information only.\n", encoding="utf-8"
+        )
+        model = FakeModel([self._impact_report()])
+
+        draft = await analyze_repository_change(
+            self.source,
+            self.docs,
+            self.base,
+            self.head,
+            model,
+            prompt_template="$source_context $document_context",
+        )
+
+        self.assertEqual(draft.outcome, "human_investigation")
+        self.assertEqual(len(model.prompts), 1)
 
 
 if __name__ == "__main__":

@@ -112,6 +112,7 @@ async def create_session(payload: CreateSessionRequest, database: Database, acto
 			model_name=payload.model_name,
 		)
 	except (ModelRequestError, ProposalValidationError) as error:
+		print(f"DEBUG ERROR: {error}")
 		raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Local model request or proposal validation failed") from error
 	except (GitCommandError, InvalidRevisionError, DocumentSearchLimitError, PatchError, ValueError, OSError) as error:
 		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error

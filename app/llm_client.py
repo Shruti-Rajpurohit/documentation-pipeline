@@ -14,6 +14,12 @@ from app.document_finder import DocumentSection
 ProposalDecision = Literal["update_required", "no_update", "human_investigation"]
 EditAction = Literal["replace", "append"]
 
+DECISION_MAP: dict[ProposalDecision, set[str]] = {
+	"update_required": {"update_required", "update", "required", "yes", "needed", "update_needed"},
+	"no_update": {"no_update", "no", "none", "not_required", "no_update_needed"},
+	"human_investigation": {"human_investigation", "investigate", "uncertain", "unknown", "human"},
+}
+
 
 class ProposalValidationError(ValueError):
 	pass
@@ -142,6 +148,7 @@ def parse_proposal(
 	allowed_sections: Mapping[str, set[str]],
 	allowed_evidence_refs: set[str],
 ) -> DocumentationProposal:
+	print(f"DEBUG RAW RESPONSE: {response_text}") # Debugging line to print the raw response from the model
 	try:
 		payload = json.loads(response_text)
 	except json.JSONDecodeError as error:
@@ -149,13 +156,21 @@ def parse_proposal(
 	if not isinstance(payload, dict):
 		raise ProposalValidationError("Model response must be a JSON object")
 
-	decision = payload.get("decision")
-	if not isinstance(decision, str) or decision not in {
-		"update_required",
-		"no_update",
-		"human_investigation",
-	}:
-		raise ProposalValidationError("Unsupported proposal decision")
+	raw_decision = payload.get("decision")
+	if not isinstance(raw_decision, str):
+		raise ProposalValidationError(f"Decision must be a string, got {type(raw_decision)}")
+	normalized_decision = raw_decision.strip().lower().replace(" ", "_")
+	canonical_decision = next(
+		(
+			canonical
+			for canonical, synonyms in DECISION_MAP.items()
+			if normalized_decision in synonyms
+		),
+		None,
+	)
+	if canonical_decision is None:
+		raise ProposalValidationError(f"Unsupported proposal decision: {raw_decision}")
+	decision: ProposalDecision = canonical_decision
 	rationale = _required_string(payload, "rationale")
 	uncertainties = _string_list(payload, "uncertainties")
 	tests_to_run = _string_list(payload, "tests_to_run")
