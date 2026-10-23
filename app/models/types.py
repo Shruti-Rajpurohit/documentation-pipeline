@@ -22,3 +22,4 @@ class ProposalDecision(str, Enum):
 class EditAction(str, Enum):
 	REPLACE = "replace"
 	APPEND = "append"
+	CREATE = "create"

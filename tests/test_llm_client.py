@@ -35,6 +35,40 @@ class ParseProposalTests(unittest.TestCase):
         self.assertEqual(proposal.changes[0].path, "docs/api.md")
         self.assertEqual(proposal.changes[0].evidence, ("head456:src/payments.py",))
 
+    def test_parses_create_for_a_new_heading_in_an_approved_file(self) -> None:
+        change = {
+            "path": "docs/api.md",
+            "section": "Forgot Password",
+            "action": "create",
+            "content": "Use the reset endpoint to continue.",
+            "evidence": ["head456:src/payments.py"],
+        }
+
+        proposal = parse_proposal(
+            self._response(changes=[change]),
+            self.allowed_sections,
+            self.allowed_evidence,
+        )
+
+        self.assertEqual(proposal.changes[0].action, "create")
+        self.assertEqual(proposal.changes[0].section, "Forgot Password")
+
+    def test_rejects_create_when_heading_already_exists(self) -> None:
+        change = {
+            "path": "docs/api.md",
+            "section": "Payments API",
+            "action": "create",
+            "content": "Duplicate section.",
+            "evidence": ["head456:src/payments.py"],
+        }
+
+        with self.assertRaises(ProposalValidationError):
+            parse_proposal(
+                self._response(changes=[change]),
+                self.allowed_sections,
+                self.allowed_evidence,
+            )
+
     def test_allows_no_update_without_changes(self) -> None:
         response = self._response(decision="no_update", changes=[])
 

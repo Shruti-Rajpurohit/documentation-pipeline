@@ -173,6 +173,9 @@ def _apply_edit(text: str, path: str, edit: DocumentEdit) -> str:
 		if match:
 			headings.append((index, len(match.group(1)), match.group(2).strip()))
 
+	if edit.action == "create":
+		return _append_new_section(text, path, edit, headings)
+
 	if not headings:
 		if edit.section != Path(path).name:
 			raise PatchError(f"Section not found in {path}: {edit.section}")
@@ -205,3 +208,32 @@ def _apply_edit(text: str, path: str, edit: DocumentEdit) -> str:
 	replacement.extend([replacement_content, "\n"])
 	lines[start:end] = replacement
 	return "".join(lines)
+
+
+def _append_new_section(
+	text: str,
+	path: str,
+	edit: DocumentEdit,
+	headings: list[tuple[int, int, str]],
+) -> str:
+	section = edit.section.strip()
+	content = edit.content.strip()
+	if not section or not content:
+		raise PatchError(f"New section heading and content cannot be empty: {path}")
+	if "\n" in section or "\r" in section:
+		raise PatchError(f"New section heading must be a single line: {path}")
+	if any(heading.casefold() == section.casefold() for _, _, heading in headings):
+		raise PatchError(f"New section already exists in {path}: {section}")
+
+	level = 1
+	if headings:
+		shallowest_level = min(heading_level for _, heading_level, _ in headings)
+		level = shallowest_level + 1 if shallowest_level == 1 else shallowest_level
+		level = min(level, 6)
+	new_section = f"{'#' * level} {section}\n\n{content}\n"
+	if not text:
+		return new_section
+	separator = "\n" if text.endswith("\n\n") else "\n\n"
+	if text.endswith("\n"):
+		separator = "\n" if not text.endswith("\n\n") else ""
+	return f"{text}{separator}{new_section}"

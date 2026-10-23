@@ -36,6 +36,22 @@ class PatchWriterTests(unittest.TestCase):
         self.assertIn("+New behavior.", prepared.files[0].unified_diff)
         self.assertIn("Keep this.", prepared.files[0].after)
 
+    def test_create_appends_new_heading_and_content(self) -> None:
+        edit = DocumentEdit(
+            path="docs/api.md",
+            section="Forgot Password",
+            action="create",
+            content="Use the password reset flow.",
+            evidence=("head:src/api.py",),
+        )
+
+        prepared = prepare_patch(self.repo, [edit])
+
+        self.assertTrue(prepared.files[0].after.startswith("# API"))
+        self.assertIn("## Forgot Password\n\nUse the password reset flow.", prepared.files[0].after)
+        self.assertIn("Keep this.", prepared.files[0].after)
+        self.assertTrue(prepared.files[0].after.endswith("\n"))
+
     def test_apply_requires_explicit_approval(self) -> None:
         prepared = prepare_patch(self.repo, [self._edit()])
 

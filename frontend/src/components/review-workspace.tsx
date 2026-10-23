@@ -201,6 +201,13 @@ export function ReviewWorkspace() {
 
         <Card className={`min-h-[400px] flex-col overflow-hidden md:flex ${paneVisibility("proposed")}`}>
           <PaneTitle icon={<FileText size={15} />} title="Proposed patch" detail={activeEdit?.section_heading ?? "No proposal"} />
+          {activeEdit?.action === "create" && (
+            <div className="border-b border-[var(--border)] px-3 py-2">
+              <Badge className="border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                NEW SECTION
+              </Badge>
+            </div>
+          )}
           {edits.length > 1 && (
             <div className="flex gap-1 overflow-x-auto border-b border-[var(--border)] px-2 py-1.5">
               {edits.map((edit) => (

@@ -1,6 +1,6 @@
 export type UserRole = "WRITER" | "REVIEWER" | "APPROVER";
 export type ReviewStatus = "AWAITING_REVIEW" | "APPROVED" | "REJECTED";
-export type EditAction = "replace" | "append";
+export type EditAction = "replace" | "append" | "create";
 export type ProposalDecision = "update_required" | "no_update" | "human_investigation";
 
 export interface User {

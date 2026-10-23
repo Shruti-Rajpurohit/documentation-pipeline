@@ -3,24 +3,28 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from string import Template
 from typing import Protocol
 
 from app.change_analyzer import analyze_change
-from app.document_finder import DocumentSearchLimitError, DocumentSection, find_candidate_sections
+from app.document_finder import (
+	DocumentSearchLimitError,
+	DocumentSection,
+	find_candidate_sections,
+	list_document_section_index,
+)
 from app.git_tools import GitDiff, collect_git_diff
 from app.llm_client import (
 	DocumentationProposal,
-	ProposalValidationError,
 	parse_proposal,
 )
 from app.models.pipeline import PipelineDraft, PipelineOutcome
 from app.patch_writer import PreparedPatch, prepare_patch
 
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "documentation_update.txt"
 HALLUCINATION_NOTE = "AI hallucinated content not found in source code."
 _WORD_PATTERN = re.compile(r"[a-z]+|\d+")
@@ -50,36 +54,49 @@ Update: "Users can now maintain multiple independent chat threads."
 class TextGenerator(Protocol):
 	def generate(self, prompt: str) -> str: ...
 
-
-@dataclass(frozen=True)
-class ImpactReport:
-	changed_functions_endpoints: tuple[str, ...]
-	technical_summary: str
-	documentation_sections_to_update: tuple[str, ...]
-
-
-class ImpactReportValidationError(ProposalValidationError):
-	pass
-
-
-def analyze_change_impact(source_diff: GitDiff, model_client: TextGenerator) -> ImpactReport:
+def analyze_change_impact(
+	source_diff: GitDiff,
+	document_context: list[DocumentSection],
+	model_client: TextGenerator,
+) -> str:
+	document_index = json.dumps(
+		[
+			{"path": section.path, "heading": section.heading, "content": section.content}
+			for section in document_context
+		],
+		ensure_ascii=False,
+		indent=2,
+	)
 	prompt = f"""\
 You are a code-change analyst. Inspect only the source diff below and extract facts.
 Do not write user-facing documentation or infer behavior not established by the diff.
+Compare changed features and endpoints with DOCUMENT_CONTEXT. Some entries contain only an existing file path and heading, with empty content; these are an index, not section content. If a feature requires documentation but has no matching existing section, report decision "update_required" and set "create_new_section" to true. Otherwise set it to false.
 Return a JSON object containing these fields; extra fields are allowed:
+- "decision": "update_required", "no_update", or "human_investigation".
+- "create_new_section": true when a new documentation section is needed, otherwise false.
 - "changed_functions_endpoints": an array naming each changed function or endpoint; use [] if none.
 - "technical_summary": one concise, technical, factual summary of the change.
 - "documentation_sections_to_update": an array of documentation topics that the diff requires updating.
-The first two fields are required. "documentation_sections_to_update" is optional.
 
 SOURCE DIFF:
 {source_diff.patch}
+
+DOCUMENT_CONTEXT:
+{document_index}
 """
-	return _parse_impact_report(model_client.generate(prompt))
+	return model_client.generate(prompt)
+
+
+def _creation_requested(impact_report: str) -> bool:
+	try:
+		report = json.loads(impact_report)
+	except json.JSONDecodeError:
+		return False
+	return isinstance(report, dict) and report.get("create_new_section") is True
 
 
 def generate_doc_proposal(
-	impact_report: ImpactReport,
+	impact_report: str,
 	sections: list[DocumentSection],
 	model_client: TextGenerator,
 	allowed_evidence_refs: set[str],
@@ -87,15 +104,6 @@ def generate_doc_proposal(
 	prompt_template: str | None = None,
 ) -> tuple[DocumentationProposal, str]:
 	template = prompt_template if prompt_template is not None else PROMPT_PATH.read_text(encoding="utf-8")
-	source_context = json.dumps(
-		{
-			"changed_functions_endpoints": impact_report.changed_functions_endpoints,
-			"technical_summary": impact_report.technical_summary,
-			"documentation_sections_to_update": impact_report.documentation_sections_to_update,
-		},
-		ensure_ascii=False,
-		indent=2,
-	)
 	document_context = json.dumps(
 		[
 			{
@@ -112,16 +120,32 @@ def generate_doc_proposal(
 		indent=2,
 	)
 	prompt = Template(template).substitute(
-		source_context=source_context,
+		source_context=impact_report,
 		document_context=document_context,
 	)
-	prompt = f"{prompt.rstrip()}\n\n{_FEW_SHOT_EXAMPLES}"
+	prompt = (
+		f"{prompt.rstrip()}\n\n"
+		"DOCUMENT_CONTEXT entries with empty content are an index only. Use their path "
+		"and heading only to choose a file for a create action; do not replace or append "
+		"to those sections. Use create only when the impact report sets "
+		'"create_new_section": true, and use a genuinely new heading.\n\n'
+		f"{_FEW_SHOT_EXAMPLES}"
+	)
 	raw_response = model_client.generate(prompt)
 	allowed_sections: dict[str, set[str]] = {}
+	existing_sections: dict[str, set[str]] = {}
 	for section in sections:
-		allowed_sections.setdefault(section.path, set()).add(section.heading)
+		existing_sections.setdefault(section.path, set()).add(section.heading)
+		if section.matched_terms:
+			allowed_sections.setdefault(section.path, set()).add(section.heading)
 	return (
-		parse_proposal(raw_response, allowed_sections, allowed_evidence_refs),
+		parse_proposal(
+			raw_response,
+			allowed_sections,
+			allowed_evidence_refs,
+			allowed_create_paths={section.path for section in sections},
+			existing_sections=existing_sections,
+		),
 		raw_response,
 	)
 
@@ -183,21 +207,51 @@ def build_pipeline_draft(
 	note = ""
 
 	if analysis.decision == "update_required":
-		impact_report = analyze_change_impact(source_diff, model_client)
 		try:
 			sections = find_candidate_sections(docs_repo, source_diff.changed_files, source_diff.patch)
 		except DocumentSearchLimitError as error:
 			outcome = "human_investigation"
 			note = str(error)
 		if outcome != "human_investigation":
-			selected_sections: dict[tuple[str, str], DocumentSection] = {}
+			matching_section_map: dict[tuple[str, str], DocumentSection] = {}
 			for section in sections:
+				matching_section_map.setdefault((section.path, section.heading), section)
+			matching_sections = list(matching_section_map.values())
+			try:
+				document_index = list_document_section_index(docs_repo)
+			except DocumentSearchLimitError as error:
+				outcome = "human_investigation"
+				note = str(error)
+			document_context_map: dict[tuple[str, str], DocumentSection] = {}
+			if outcome != "human_investigation":
+				document_context_map = {
+					(section.path, section.heading): section
+					for section in document_index
+				}
+			for section in matching_sections:
+				document_context_map[(section.path, section.heading)] = section
+			document_context = list(document_context_map.values())
+			if outcome != "human_investigation":
+				impact_report = analyze_change_impact(source_diff, document_context, model_client)
+				create_new_section = _creation_requested(impact_report)
+			else:
+				create_new_section = False
+			selected_sections: dict[tuple[str, str], DocumentSection] = {}
+			for section in document_context:
 				selected_sections.setdefault((section.path, section.heading), section)
 			sections = list(selected_sections.values())
-			if not sections:
+			if (
+				outcome != "human_investigation"
+				and not matching_sections
+				and (not create_new_section or not sections)
+			):
 				outcome = "human_investigation"
-				note = "No unambiguous documentation sections matched the changed identifiers."
-			else:
+				note = (
+					"No existing documentation file is available for a new section."
+					if create_new_section and not sections
+					else "No unambiguous documentation sections matched the changed identifiers."
+				)
+			elif outcome != "human_investigation":
 				proposal, raw_response = generate_doc_proposal(
 					impact_report,
 					sections,
@@ -216,7 +270,14 @@ def build_pipeline_draft(
 					proposal = replace(
 						proposal,
 						changes=tuple(
-							replace(change, start_line=section_lines[(change.path, change.section)])
+							replace(
+								change,
+								start_line=(
+									None
+									if change.action == "create"
+									else section_lines[(change.path, change.section)]
+								),
+							)
 							for change in proposal.changes
 						),
 					)
@@ -236,52 +297,6 @@ def build_pipeline_draft(
 		outcome=outcome,
 		note=note,
 	)
-
-
-def _parse_impact_report(response_text: str) -> ImpactReport:
-	try:
-		payload = json.loads(response_text)
-	except json.JSONDecodeError as error:
-		raise ImpactReportValidationError("Impact report must be valid JSON") from error
-	if not isinstance(payload, dict):
-		raise ImpactReportValidationError("Impact report must be a JSON object")
-
-	changed_functions = _required_impact_string_tuple(
-		payload,
-		"changed_functions_endpoints",
-		"changed_functions",
-	)
-	technical_summary = payload.get("technical_summary", payload.get("impact_summary"))
-	if not isinstance(technical_summary, str) or not technical_summary.strip():
-		raise ImpactReportValidationError("Impact report technical_summary must be a non-empty string")
-	documentation_sections = _string_tuple(
-		payload,
-		"documentation_sections_to_update",
-	) if "documentation_sections_to_update" in payload else ()
-	return ImpactReport(
-		changed_functions_endpoints=changed_functions,
-		technical_summary=technical_summary.strip(),
-		documentation_sections_to_update=documentation_sections,
-	)
-
-
-def _required_impact_string_tuple(
-	payload: dict[str, object],
-	field: str,
-	alias: str,
-) -> tuple[str, ...]:
-	if field not in payload and alias not in payload:
-		raise ImpactReportValidationError(f"Impact report must include '{field}'")
-	return _string_tuple(payload, field if field in payload else alias)
-
-
-def _string_tuple(payload: dict[str, object], field: str) -> tuple[str, ...]:
-	value = payload.get(field)
-	if not isinstance(value, list) or any(
-		not isinstance(item, str) or not item.strip() for item in value
-	):
-		raise ImpactReportValidationError(f"Impact report {field} must be a list of non-empty strings")
-	return tuple(item.strip() for item in value)
 
 
 def _facts_from_text(text: str) -> tuple[set[str], set[str]]:

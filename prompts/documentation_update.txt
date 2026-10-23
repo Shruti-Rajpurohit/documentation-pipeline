@@ -17,7 +17,7 @@ Return only a valid JSON object with exactly these keys:
     {
       "path": "Path to the file",
       "section": "The exact heading of the section to edit",
-      "action": "replace" | "append",
+      "action": "replace" | "append" | "create",
       "content": "The new updated content for this section",
       "evidence": ["References to the code change, e.g., commit:path"]
     }
@@ -29,7 +29,9 @@ Return only a valid JSON object with exactly these keys:
 ### RULES
 - If decision is "update_required", the "changes" list must not be empty.
 - If decision is "no_update" or "human_investigation", the "changes" list must be empty.
-- The "section" field must match one of the headings provided in DOCUMENT_CONTEXT exactly.
+- For "replace" and "append", the "section" field must match one of the headings provided in DOCUMENT_CONTEXT exactly.
+- Use "create" when the impact report has "create_new_section": true. Set "section" to the new heading, "path" to an existing documentation file from DOCUMENT_CONTEXT, and "content" to the new section body without a heading line.
+- Do not use "create" for a heading that already exists in that file.
 - Use only facts supported by the IMPACT_REPORT. Do not invent features, domain concepts, values, or relationships.
 - Prefer concise, user-facing language over implementation details.
 

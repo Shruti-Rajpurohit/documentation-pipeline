@@ -12,7 +12,7 @@ from app.document_finder import DocumentSection
 
 
 ProposalDecision = Literal["update_required", "no_update", "human_investigation"]
-EditAction = Literal["replace", "append"]
+EditAction = Literal["replace", "append", "create"]
 
 DECISION_MAP: dict[ProposalDecision, set[str]] = {
 	"update_required": {"update_required", "update", "required", "yes", "needed", "update_needed"},
@@ -147,6 +147,9 @@ def parse_proposal(
 	response_text: str,
 	allowed_sections: Mapping[str, set[str]],
 	allowed_evidence_refs: set[str],
+	*,
+	allowed_create_paths: set[str] | None = None,
+	existing_sections: Mapping[str, set[str]] | None = None,
 ) -> DocumentationProposal:
 	print(f"DEBUG RAW RESPONSE: {response_text}") # Debugging line to print the raw response from the model
 	try:
@@ -180,19 +183,26 @@ def parse_proposal(
 
 	changes: list[DocumentEdit] = []
 	seen_targets: set[tuple[str, str]] = set()
+	create_paths = allowed_create_paths if allowed_create_paths is not None else set(allowed_sections)
 	for raw_change in raw_changes:
 		if not isinstance(raw_change, dict):
 			raise ProposalValidationError("Each change must be a JSON object")
 		path = _required_string(raw_change, "path")
 		section = _required_string(raw_change, "section")
 		action = raw_change.get("action")
-		if not isinstance(action, str) or action not in {"replace", "append"}:
-			raise ProposalValidationError("Change action must be 'replace' or 'append'")
+		if not isinstance(action, str) or action not in {"replace", "append", "create"}:
+			raise ProposalValidationError("Change action must be 'replace', 'append', or 'create'")
 		content = _required_string(raw_change, "content")
 		evidence = _string_list(raw_change, "evidence")
 		target = (path, section)
 
-		if path not in allowed_sections or section not in allowed_sections[path]:
+		if action == "create":
+			if path not in create_paths:
+				raise ProposalValidationError(f"New section targets an unapproved document path: {path}")
+			headings = existing_sections if existing_sections is not None else allowed_sections
+			if any(existing.casefold() == section.casefold() for existing in headings.get(path, set())):
+				raise ProposalValidationError(f"New section already exists: {path} / {section}")
+		elif path not in allowed_sections or section not in allowed_sections[path]:
 			raise ProposalValidationError(f"Change targets an unapproved document section: {path} / {section}")
 		if target in seen_targets:
 			raise ProposalValidationError(f"Duplicate change target: {path} / {section}")

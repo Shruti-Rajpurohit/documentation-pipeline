@@ -100,6 +100,71 @@ def find_candidate_sections(
 	return _rank_candidates(candidates, limit)
 
 
+def list_document_section_index(
+	repo_path: str | Path,
+	*,
+	max_files: int = 1_000,
+	max_file_bytes: int = 1_000_000,
+	max_sections: int = 500,
+) -> list[DocumentSection]:
+	if max_files < 1 or max_file_bytes < 1 or max_sections < 1:
+		raise ValueError("Search limits must be positive")
+
+	root = Path(repo_path).resolve()
+	sections: list[DocumentSection] = []
+	scanned_files = 0
+	for current_root, directories, filenames in os.walk(root, followlinks=False):
+		directories[:] = [
+			name
+			for name in directories
+			if name not in _EXCLUDED_DIRECTORIES and not (Path(current_root) / name).is_symlink()
+		]
+		for filename in filenames:
+			path = Path(current_root) / filename
+			if path.suffix.lower() not in _DOCUMENTATION_EXTENSIONS or path.is_symlink():
+				continue
+			scanned_files += 1
+			if scanned_files > max_files:
+				raise DocumentSearchLimitError(f"Documentation scan exceeds the {max_files}-file limit")
+			try:
+				if path.stat().st_size > max_file_bytes:
+					continue
+				text = path.read_text(encoding="utf-8")
+			except (OSError, UnicodeError):
+				continue
+
+			relative_path = path.relative_to(root).as_posix()
+			file_sections = _split_sections(relative_path, text)
+			if not file_sections:
+				file_sections = [
+					DocumentSection(
+						path=relative_path,
+						heading=path.name,
+						start_line=1,
+						end_line=0,
+						content="",
+						matched_terms=(),
+					)
+				]
+			indexed_sections = [
+				DocumentSection(
+					path=section.path,
+					heading=section.heading,
+					start_line=section.start_line,
+					end_line=section.end_line,
+					content="",
+					matched_terms=(),
+				)
+				for section in file_sections
+			]
+			if len(sections) + len(indexed_sections) > max_sections:
+				raise DocumentSearchLimitError(
+					f"Documentation section index exceeds the {max_sections}-section limit"
+				)
+			sections.extend(indexed_sections)
+	return sections
+
+
 def _extract_terms(changed_files: tuple[str, ...], patch: str) -> tuple[str, ...]:
 	terms: list[str] = []
 	seen: set[str] = set()

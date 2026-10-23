@@ -6,8 +6,6 @@ import unittest
 
 from app.services.pipeline import (
 	HALLUCINATION_NOTE,
-	ImpactReportValidationError,
-	_parse_impact_report,
 	analyze_repository_change,
 )
 
@@ -66,38 +64,6 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
                 "documentation_sections_to_update": ["Payments API"],
             }
         )
-
-    def test_impact_report_ignores_extra_fields_and_defaults_optional_sections(self) -> None:
-        report = _parse_impact_report(
-            json.dumps(
-                {
-                    "changed_functions_endpoints": ["createPayment"],
-                    "technical_summary": "createPayment now requires currency.",
-                    "analyst_confidence": 0.95,
-                }
-            )
-        )
-
-        self.assertEqual(report.changed_functions_endpoints, ("createPayment",))
-        self.assertEqual(report.technical_summary, "createPayment now requires currency.")
-        self.assertEqual(report.documentation_sections_to_update, ())
-
-    def test_impact_report_accepts_alternate_required_field_names(self) -> None:
-        report = _parse_impact_report(
-            json.dumps(
-                {
-                    "changed_functions": ["createPayment"],
-                    "impact_summary": "createPayment now requires currency.",
-                }
-            )
-        )
-
-        self.assertEqual(report.changed_functions_endpoints, ("createPayment",))
-        self.assertEqual(report.technical_summary, "createPayment now requires currency.")
-
-    def test_impact_report_still_requires_core_fields(self) -> None:
-        with self.assertRaises(ImpactReportValidationError):
-            _parse_impact_report(json.dumps({"changed_functions_endpoints": []}))
 
     def _proposal(self, content: str = "Pass a currency when calling `createPayment`.") -> str:
         return json.dumps(
@@ -167,6 +133,58 @@ class AnalyzeRepositoryChangeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draft.proposal.decision, "human_investigation")
         self.assertEqual(draft.proposal.changes, ())
         self.assertIn(HALLUCINATION_NOTE, draft.proposal.uncertainties)
+
+    async def test_creates_new_section_when_analyst_requests_creation_mode(self) -> None:
+        (self.docs / "docs" / "payments.md").write_text(
+            "# Overview\n\nGeneral account information only.\n",
+            encoding="utf-8",
+        )
+        impact_report = json.dumps(
+            {
+                "decision": "update_required",
+                "create_new_section": True,
+                "changed_functions_endpoints": ["createPayment"],
+                "technical_summary": "createPayment now requires currency.",
+            }
+        )
+        proposal = self._proposal("createPayment requires currency.")
+        proposal_payload = json.loads(proposal)
+        proposal_payload["changes"][0].update(
+            {"section": "Currency", "action": "create"}
+        )
+        model = FakeModel([impact_report, json.dumps(proposal_payload)])
+
+        draft = await analyze_repository_change(
+            self.source,
+            self.docs,
+            self.base,
+            self.head,
+            model,
+            prompt_template="$source_context $document_context",
+        )
+
+        self.assertEqual(draft.outcome, "awaiting_review")
+        self.assertEqual(draft.proposal.changes[0].action, "create")
+        self.assertIsNone(draft.proposal.changes[0].start_line)
+        self.assertIn("## Currency\n\ncreatePayment requires currency.", draft.prepared_patch.files[0].after)
+        self.assertIn('"create_new_section": true', model.prompts[0])
+        self.assertIn('"heading": "Overview"', model.prompts[0])
+
+    async def test_passes_incomplete_analyst_response_to_writer(self) -> None:
+        incomplete_impact_report = json.dumps({"analyst_confidence": 0.95})
+        model = FakeModel([incomplete_impact_report, self._proposal()])
+
+        draft = await analyze_repository_change(
+            self.source,
+            self.docs,
+            self.base,
+            self.head,
+            model,
+            prompt_template="$source_context $document_context",
+        )
+
+        self.assertEqual(draft.outcome, "awaiting_review")
+        self.assertIn(incomplete_impact_report, model.prompts[1])
 
     async def test_missing_candidate_does_not_call_model(self) -> None:
         (self.docs / "docs" / "payments.md").write_text(
