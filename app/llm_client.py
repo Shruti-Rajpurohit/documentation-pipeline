@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from string import Template
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -13,6 +14,7 @@ from app.document_finder import DocumentSection
 
 ProposalDecision = Literal["update_required", "no_update", "human_investigation"]
 EditAction = Literal["replace", "append", "create"]
+LLMProvider = Literal["ollama", "openrouter"]
 
 DECISION_MAP: dict[ProposalDecision, set[str]] = {
 	"update_required": {"update_required", "update", "required", "yes", "needed", "update_needed"},
@@ -31,6 +33,14 @@ class ModelRequestError(RuntimeError):
 
 class PromptSizeError(ValueError):
 	pass
+
+
+class LLMConfigurationError(ValueError):
+	pass
+
+
+class TextGenerator(Protocol):
+	def generate(self, prompt: str) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -94,6 +104,81 @@ class OllamaClient:
 		if not isinstance(generated_text, str):
 			raise ModelRequestError("Ollama returned a response without generated text")
 		return generated_text
+
+
+class OpenRouterClient:
+	def __init__(
+		self,
+		api_key: str | None,
+		model: str,
+		*,
+		timeout: float = 120,
+		max_response_bytes: int = 1_000_000,
+	) -> None:
+		resolved_api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+		if not resolved_api_key or not resolved_api_key.strip():
+			raise LLMConfigurationError("OPENROUTER_API_KEY must be set to use OpenRouter")
+		if not model.strip():
+			raise ValueError("An OpenRouter model name is required")
+		if timeout <= 0:
+			raise ValueError("Timeout must be positive")
+		if max_response_bytes < 1:
+			raise ValueError("Response size limit must be positive")
+		self.api_key = resolved_api_key.strip()
+		self.model = model
+		self.endpoint = "https://openrouter.ai/api/v1/chat/completions"
+		self.timeout = timeout
+		self.max_response_bytes = max_response_bytes
+
+	def generate(self, prompt: str) -> str:
+		request_body = json.dumps(
+			{
+				"model": self.model,
+				"messages": [{"role": "user", "content": prompt}],
+			}
+		).encode("utf-8")
+		request = Request(
+			self.endpoint,
+			data=request_body,
+			headers={
+				"Authorization": f"Bearer {self.api_key}",
+				"Content-Type": "application/json",
+				"HTTP-Referer": "http://localhost",
+				"X-Title": "Documentation Pipeline",
+			},
+			method="POST",
+		)
+		try:
+			with urlopen(request, timeout=self.timeout) as response:
+				response_body = response.read(self.max_response_bytes + 1)
+			if len(response_body) > self.max_response_bytes:
+				raise ModelRequestError(
+					f"OpenRouter response exceeds the {self.max_response_bytes}-byte limit"
+				)
+			payload = json.loads(response_body.decode("utf-8"))
+		except (HTTPError, URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as error:
+			raise ModelRequestError(f"OpenRouter request failed: {error}") from error
+
+		choices = payload.get("choices") if isinstance(payload, dict) else None
+		first_choice = choices[0] if isinstance(choices, list) and choices else None
+		message = first_choice.get("message") if isinstance(first_choice, dict) else None
+		generated_text = message.get("content") if isinstance(message, dict) else None
+		if not isinstance(generated_text, str):
+			raise ModelRequestError("OpenRouter returned a response without generated text")
+		return generated_text
+
+
+def get_llm_client(
+	provider: str,
+	model: str,
+	base_url: str | None = None,
+) -> TextGenerator:
+	normalized_provider = provider.strip().lower()
+	if normalized_provider == "ollama":
+		return OllamaClient(model=model, base_url=base_url or "http://127.0.0.1:11434")
+	if normalized_provider == "openrouter":
+		return OpenRouterClient(api_key=os.getenv("OPENROUTER_API_KEY"), model=model)
+	raise LLMConfigurationError(f"Unsupported LLM provider: {provider}")
 
 
 def build_documentation_prompt(

@@ -6,7 +6,6 @@ import re
 from dataclasses import replace
 from pathlib import Path
 from string import Template
-from typing import Protocol
 
 from app.change_analyzer import analyze_change
 from app.document_finder import (
@@ -18,6 +17,7 @@ from app.document_finder import (
 from app.git_tools import GitDiff, collect_git_diff
 from app.llm_client import (
 	DocumentationProposal,
+	TextGenerator,
 	parse_proposal,
 )
 from app.models.pipeline import PipelineDraft, PipelineOutcome
@@ -50,9 +50,6 @@ Change: Added multiple chat support
 Update: "Users can now maintain multiple independent chat threads."
 """
 
-
-class TextGenerator(Protocol):
-	def generate(self, prompt: str) -> str: ...
 
 def analyze_change_impact(
 	source_diff: GitDiff,

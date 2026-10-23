@@ -18,7 +18,7 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ApiRequestError, createSession, getCurrentUser, listSessions } from "@/lib/api";
-import type { CreateSessionInput, ReviewSessionSummary, ReviewStatus } from "@/lib/types";
+import type { CreateSessionInput, LLMProvider, ReviewSessionSummary, ReviewStatus } from "@/lib/types";
 import { AuthSetupPanel } from "@/components/auth-setup-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -57,6 +57,7 @@ function CreateSessionDialog() {
     base_revision: "",
     head_revision: "HEAD",
     model_name: "",
+    provider: "ollama",
   });
   const queryClient = useQueryClient();
   const router = useRouter();
@@ -108,9 +109,30 @@ function CreateSessionDialog() {
             </label>
           </div>
           <label className="grid gap-1.5 text-xs font-semibold text-[var(--muted)]">
-            Local Ollama model
-            <Input required value={form.model_name} onChange={(event) => update("model_name", event.target.value)} placeholder="qwen3-coder:30b" />
+            Model provider
+            <select
+              className="h-10 rounded-[5px] border border-[var(--border)] bg-[var(--surface-raised)] px-3 text-sm text-[var(--foreground)]"
+              value={form.provider ?? "ollama"}
+              onChange={(event) => update("provider", event.target.value as LLMProvider)}
+            >
+              <option value="ollama">Local Ollama</option>
+              <option value="openrouter">OpenRouter (cloud)</option>
+            </select>
           </label>
+          <label className="grid gap-1.5 text-xs font-semibold text-[var(--muted)]">
+            {form.provider === "openrouter" ? "OpenRouter model" : "Ollama model"}
+            <Input
+              required
+              value={form.model_name}
+              onChange={(event) => update("model_name", event.target.value)}
+              placeholder={form.provider === "openrouter" ? "provider/model-name" : "qwen3-coder:30b"}
+            />
+          </label>
+          {form.provider === "openrouter" && (
+            <p className="text-xs text-[var(--muted)]">
+              OpenRouter uses the server-side OPENROUTER_API_KEY environment variable.
+            </p>
+          )}
           <div className="mt-1 flex justify-end gap-2 border-t border-[var(--border)] pt-4">
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={mutation.isPending}>

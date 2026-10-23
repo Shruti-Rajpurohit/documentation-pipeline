@@ -12,6 +12,7 @@ from sqlalchemy.pool import NullPool
 
 from app.api.dependencies import get_current_user
 from app.api.main import app
+from app.api.schemas import CreateSessionRequest
 from app.db.database import Base, get_db
 from app.db.models import User
 from app.git_tools import GitDiff
@@ -108,10 +109,48 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 	async def _get_actor(self) -> User:
 		return self.actors[self.actor_role]
 
-	async def _post_session(self) -> dict[str, object]:
+	async def _post_session(self, provider: str | None = None) -> dict[str, object]:
+		payload: dict[str, str] = {
+			"source_repo": str(self.source),
+			"docs_repo": str(self.docs),
+			"base_revision": "base123",
+			"head_revision": "head456",
+			"model_name": "local-model:version",
+		}
+		if provider is not None:
+			payload["provider"] = provider
 		with (
 			patch("app.api.routes.analyze_repository_change", new=AsyncMock(return_value=self.draft)),
 			patch.dict(os.environ, {"REPOSITORY_ROOTS": str(self.root)}),
+		):
+			response = await self.client.post("/sessions", json=payload)
+		self.assertEqual(response.status_code, 201, response.text)
+		return response.json()
+
+	def test_create_session_request_defaults_to_ollama(self) -> None:
+		payload = CreateSessionRequest(
+			source_repo="/source",
+			docs_repo="/docs",
+			base_revision="base",
+			model_name="model",
+		)
+
+		self.assertEqual(payload.provider, "ollama")
+
+	async def test_create_session_uses_requested_provider(self) -> None:
+		with patch("app.api.routes.get_llm_client", return_value=object()) as get_llm_client:
+			await self._post_session(provider="openrouter")
+
+		get_llm_client.assert_called_once_with(
+			provider="openrouter",
+			model="local-model:version",
+			base_url="http://127.0.0.1:11434",
+		)
+
+	async def test_openrouter_without_api_key_returns_service_unavailable(self) -> None:
+		with (
+			patch.dict(os.environ, {"REPOSITORY_ROOTS": str(self.root)}),
+			patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}),
 		):
 			response = await self.client.post(
 				"/sessions",
@@ -120,11 +159,13 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 					"docs_repo": str(self.docs),
 					"base_revision": "base123",
 					"head_revision": "head456",
-					"model_name": "local-model:version",
+					"model_name": "vendor/model",
+					"provider": "openrouter",
 				},
 			)
-		self.assertEqual(response.status_code, 201, response.text)
-		return response.json()
+
+		self.assertEqual(response.status_code, 503)
+		self.assertIn("OPENROUTER_API_KEY", response.json()["detail"])
 
 	async def test_create_get_edit_audit_and_approve(self) -> None:
 		created = await self._post_session()

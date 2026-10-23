@@ -1,7 +1,15 @@
 import json
 import unittest
+from unittest.mock import MagicMock, patch
 
-from app.llm_client import ProposalValidationError, parse_proposal
+from app.llm_client import (
+	LLMConfigurationError,
+	OllamaClient,
+	OpenRouterClient,
+	ProposalValidationError,
+	get_llm_client,
+	parse_proposal,
+)
 
 
 class ParseProposalTests(unittest.TestCase):
@@ -176,6 +184,55 @@ class ParseProposalTests(unittest.TestCase):
 
         with self.assertRaises(ProposalValidationError):
             parse_proposal(self._response(changes=[change]), self.allowed_sections, self.allowed_evidence)
+
+
+class LLMClientTests(unittest.TestCase):
+	def test_ollama_factory_preserves_local_base_url(self) -> None:
+		client = get_llm_client("ollama", "local-model", "http://ollama:11434/")
+
+		self.assertIsInstance(client, OllamaClient)
+		self.assertEqual(client.endpoint, "http://ollama:11434/api/generate")
+
+	def test_openrouter_factory_uses_environment_api_key(self) -> None:
+		with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+			client = get_llm_client("openrouter", "vendor/model")
+
+		self.assertIsInstance(client, OpenRouterClient)
+		self.assertEqual(client.api_key, "test-key")
+		self.assertEqual(client.model, "vendor/model")
+
+	def test_openrouter_requires_api_key(self) -> None:
+		with patch.dict("os.environ", {}, clear=True):
+			with self.assertRaises(LLMConfigurationError):
+				get_llm_client("openrouter", "vendor/model")
+
+	def test_rejects_unknown_provider(self) -> None:
+		with self.assertRaises(LLMConfigurationError):
+			get_llm_client("other", "model")
+
+	def test_openrouter_sends_expected_request_and_extracts_content(self) -> None:
+		response = MagicMock()
+		response.__enter__.return_value.read.return_value = json.dumps(
+			{"choices": [{"message": {"content": '{"ok": true}'}}]}
+		).encode()
+		client = OpenRouterClient(api_key="test-key", model="vendor/model")
+
+		with patch("app.llm_client.urlopen", return_value=response) as urlopen:
+			result = client.generate("Return JSON")
+
+		self.assertEqual(result, '{"ok": true}')
+		request = urlopen.call_args.args[0]
+		self.assertEqual(request.full_url, "https://openrouter.ai/api/v1/chat/completions")
+		self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
+		self.assertEqual(request.get_header("Http-referer"), "http://localhost")
+		self.assertEqual(request.get_header("X-title"), "Documentation Pipeline")
+		self.assertEqual(
+			json.loads(request.data),
+			{
+				"model": "vendor/model",
+				"messages": [{"role": "user", "content": "Return JSON"}],
+			},
+		)
 
 
 if __name__ == "__main__":

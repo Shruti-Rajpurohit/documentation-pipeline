@@ -2,6 +2,7 @@ export type UserRole = "WRITER" | "REVIEWER" | "APPROVER";
 export type ReviewStatus = "AWAITING_REVIEW" | "APPROVED" | "REJECTED";
 export type EditAction = "replace" | "append" | "create";
 export type ProposalDecision = "update_required" | "no_update" | "human_investigation";
+export type LLMProvider = "ollama" | "openrouter";
 
 export interface User {
   id: number;
@@ -71,6 +72,7 @@ export interface CreateSessionInput {
   base_revision: string;
   head_revision: string;
   model_name: string;
+  provider?: LLMProvider;
   ollama_url?: string;
 }
 

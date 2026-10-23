@@ -31,7 +31,12 @@ from app.db.models import (
 )
 from app.document_finder import DocumentSearchLimitError
 from app.git_tools import GitCommandError, InvalidRevisionError
-from app.llm_client import ModelRequestError, OllamaClient, ProposalValidationError
+from app.llm_client import (
+	LLMConfigurationError,
+	ModelRequestError,
+	ProposalValidationError,
+	get_llm_client,
+)
 from app.models.types import EditAction, ProposalDecision, ReviewStatus, UserRole
 from app.patch_writer import PatchError, StalePatchError
 from app.services.pipeline import PROMPT_VERSION, analyze_repository_change
@@ -101,7 +106,17 @@ async def create_session(payload: CreateSessionRequest, database: Database, acto
 	except (OSError, ValueError) as error:
 		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Repository path is invalid") from error
 
-	model_client = OllamaClient(model=payload.model_name, base_url=payload.ollama_url)
+	try:
+		model_client = get_llm_client(
+			provider=payload.provider,
+			model=payload.model_name,
+			base_url=payload.ollama_url,
+		)
+	except LLMConfigurationError as error:
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail=str(error),
+		) from error
 	try:
 		draft = await analyze_repository_change(
 			source_repo,

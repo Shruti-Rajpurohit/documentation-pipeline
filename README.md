@@ -6,7 +6,7 @@ A FastAPI service that compares product repository revisions, finds related docu
 
 - Python 3.10 or newer
 - Git
-- Ollama with a pinned model available locally
+- Either Ollama with a pinned model available locally, or an OpenRouter API key
 - A source repository with at least two commits
 - A documentation working tree containing Markdown, MDX, reStructuredText, or AsciiDoc files
 - A trusted authentication proxy that injects the authenticated database user ID
@@ -25,10 +25,16 @@ python -m pip install -r requirements-dev.txt
 
 ## Run
 
-Start Ollama and pull the model you want to evaluate:
+For local inference, start Ollama and pull the model you want to evaluate:
 
 ```sh
 ollama pull "MODEL:VERSION"
+```
+
+For cloud inference, set the OpenRouter API key on the API server. The key is never sent to the dashboard:
+
+```sh
+export OPENROUTER_API_KEY="your-openrouter-api-key"
 ```
 
 Set a stable proxy secret and provision users for your authentication proxy to map to:
@@ -51,7 +57,7 @@ python -m app.main --host 127.0.0.1 --port 8000
 
 The SQLite database defaults to `./data/documentation_pipeline.db`; override it with `DATABASE_URL`. Tables are created on startup. OpenAPI docs are available at `http://127.0.0.1:8000/docs`.
 
-Create a review by posting JSON to `/sessions` with `source_repo`, `docs_repo`, `base_revision`, `head_revision`, `model_name`, and optional `ollama_url`. Include the two trusted-proxy headers. `POST /sessions/{id}/edit` accepts a `document_edit_id` and new `content`; `/approve` requires `APPROVER`; `/reject` requires `REVIEWER` or `APPROVER`.
+Create a review by posting JSON to `/sessions` with `source_repo`, `docs_repo`, `base_revision`, `head_revision`, and `model_name`. The optional `provider` field defaults to `"ollama"` and accepts `"openrouter"`; `ollama_url` applies only to Ollama. OpenRouter requests require `OPENROUTER_API_KEY` in the API server environment. Include the two trusted-proxy headers. `POST /sessions/{id}/edit` accepts a `document_edit_id` and new `content`; `/approve` requires `APPROVER`; `/reject` requires `REVIEWER` or `APPROVER`.
 
 ## Review Behavior
 

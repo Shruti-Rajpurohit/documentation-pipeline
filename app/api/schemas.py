@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +17,7 @@ class CreateSessionRequest(BaseModel):
 	base_revision: str = Field(min_length=1, max_length=200)
 	head_revision: str = Field(default="HEAD", min_length=1, max_length=200)
 	model_name: str = Field(min_length=1, max_length=200)
+	provider: Literal["ollama", "openrouter"] = "ollama"
 	ollama_url: str = Field(default="http://127.0.0.1:11434", max_length=2048)
 
 
