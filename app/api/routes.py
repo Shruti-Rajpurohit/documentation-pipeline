@@ -105,18 +105,14 @@ async def create_session(payload: CreateSessionRequest, database: Database, acto
 		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 	except (OSError, ValueError) as error:
 		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Repository path is invalid") from error
-
 	try:
 		model_client = get_llm_client(
-			provider=payload.provider,
-			model=payload.model_name,
-			base_url=payload.ollama_url,
-		)
+			provider=payload.provider or "ollama", 
+            model=payload.model_name, 
+            base_url=payload.ollama_url
+        )
 	except LLMConfigurationError as error:
-		raise HTTPException(
-			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-			detail=str(error),
-		) from error
+		raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 	try:
 		draft = await analyze_repository_change(
 			source_repo,
