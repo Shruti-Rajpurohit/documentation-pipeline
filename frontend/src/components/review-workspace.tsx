@@ -20,7 +20,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ApiRequestError, approveSession, editSession, getCurrentUser, getSession, rejectSession } from "@/lib/api";
-import type { ReviewStatus } from "@/lib/types";
+import type { DocumentKind, ReviewStatus, UserRole } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -75,6 +75,22 @@ function SourceDiff({ value }: { value: string }) {
   );
 }
 
+const kindLabels: Record<DocumentKind, string> = {
+  api: "API docs",
+  developer: "Developer guide",
+  user: "User guide",
+  blog: "Blog",
+  other: "Docs",
+};
+
+function canSave(role: UserRole | undefined) {
+  return role === "WRITER" || role === "REVIEWER";
+}
+
+function canReview(role: UserRole | undefined) {
+  return role === "REVIEWER" || role === "APPROVER";
+}
+
 function PaneTitle({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) {
   return (
     <CardHeader className="min-h-[52px] justify-start">
@@ -92,7 +108,7 @@ export function ReviewWorkspace() {
   const sessionId = params.id;
   const queryClient = useQueryClient();
   const [selectedEditId, setSelectedEditId] = useState<number | null>(null);
-  const [mobilePane, setMobilePane] = useState<Pane>("context");
+  const [mobilePane, setMobilePane] = useState<Pane>("proposed");
   const [editorDraft, setEditorDraft] = useState<{ editId: number; content: string } | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const sessionQuery = useQuery({ queryKey: ["session", sessionId], queryFn: () => getSession(sessionId) });
@@ -103,7 +119,8 @@ export function ReviewWorkspace() {
   const editedContent = activeEdit && editorDraft?.editId === activeEdit.id
     ? editorDraft.content
     : activeEdit?.content ?? "";
-  const pending = session?.status === "AWAITING_REVIEW";
+  const pending = session?.status === "AWAITING_REVIEW"
+    && Boolean(session.proposal?.edits.length && session.patch_diff);
   const role = userQuery.data?.role;
   const authenticationError = [sessionQuery.error, userQuery.error].find(
     (error): error is ApiRequestError => error instanceof ApiRequestError && [401, 503].includes(error.status),
@@ -168,6 +185,25 @@ export function ReviewWorkspace() {
         <Button variant="ghost" size="sm" onClick={() => void sessionQuery.refetch()}><RotateCw size={14} />Refresh</Button>
       </header>
 
+      {!session.proposal && (
+        <div role="status" className="border-b border-[var(--warning)]/30 bg-[var(--warning-soft)] px-4 py-3 text-sm">
+          <p className="font-semibold">No documentation patch is available for this session.</p>
+          <p className="mt-1 text-[var(--muted)]">{session.review_note ?? session.analysis_rationale}</p>
+        </div>
+      )}
+      {session.status === "REJECTED" && session.review_note && (
+        <div role="status" className="border-b border-[var(--danger)]/30 bg-[var(--danger-soft)] px-4 py-3 text-sm">
+          <p className="font-semibold">Reviewer feedback</p>
+          <p className="mt-1 text-[var(--muted)]">{session.review_note}</p>
+        </div>
+      )}
+      {session.change_summary && (
+        <div className="border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm">
+          <p className="font-semibold">Writer change summary</p>
+          <p className="mt-1 text-[var(--muted)]">{session.change_summary}</p>
+        </div>
+      )}
+
       <div className="flex items-center gap-1 border-b border-[var(--border)] bg-[var(--surface-muted)] px-3 py-1.5 md:hidden">
         {(["context", "current", "proposed"] as const).map((pane) => (
           <button key={pane} type="button" onClick={() => setMobilePane(pane)} className={`flex-1 rounded-[4px] px-2 py-1.5 text-xs font-semibold capitalize ${mobilePane === pane ? "bg-[var(--surface)] text-[var(--foreground)] shadow-sm" : "text-[var(--muted)]"}`}>
@@ -201,11 +237,16 @@ export function ReviewWorkspace() {
 
         <Card className={`min-h-[400px] flex-col overflow-hidden md:flex ${paneVisibility("proposed")}`}>
           <PaneTitle icon={<FileText size={15} />} title="Proposed patch" detail={activeEdit?.section_heading ?? "No proposal"} />
-          {activeEdit?.action === "create" && (
-            <div className="border-b border-[var(--border)] px-3 py-2">
-              <Badge className="border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
-                NEW SECTION
+          {activeEdit && (
+            <div className="flex flex-wrap gap-1.5 border-b border-[var(--border)] px-3 py-2">
+              <Badge className="border-[var(--border)] bg-[var(--surface-muted)] text-[var(--foreground)]">
+                {kindLabels[activeEdit.doc_kind] ?? kindLabels.other}
               </Badge>
+              {activeEdit.action === "create" && (
+                <Badge className="border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                  NEW SECTION
+                </Badge>
+              )}
             </div>
           )}
           {edits.length > 1 && (
@@ -229,7 +270,7 @@ export function ReviewWorkspace() {
             <Textarea
               aria-label="Proposed documentation content"
               className="mono min-h-44 rounded-none border-0 border-t border-[var(--border)] bg-[var(--surface-raised)] text-xs"
-              readOnly={!activeEdit || role !== "WRITER" || !pending}
+              readOnly={!activeEdit || !canSave(role) || !pending}
               value={editedContent}
               onChange={(event) => activeEdit && setEditorDraft({ editId: activeEdit.id, content: event.target.value })}
             />
@@ -238,6 +279,20 @@ export function ReviewWorkspace() {
       </div>
 
       <div className="sticky bottom-0 z-20 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-3 sm:px-5">
+        <div className="mx-auto mb-3 max-w-[1600px] grid gap-2 text-xs text-[var(--muted)] md:grid-cols-3">
+          <div>
+            <div className="mb-1 font-bold uppercase text-[10px]">Evidence</div>
+            <p>{activeEdit?.evidence.join(", ") || session.evidence_refs.join(", ") || "None recorded"}</p>
+          </div>
+          <div>
+            <div className="mb-1 font-bold uppercase text-[10px]">Uncertainties</div>
+            <p>{session.proposal?.uncertainties.join(" · ") || "None reported"}</p>
+          </div>
+          <div>
+            <div className="mb-1 font-bold uppercase text-[10px]">Suggested checks</div>
+            <p>{session.proposal?.tests_to_run.join(" · ") || "None suggested"}</p>
+          </div>
+        </div>
         <div className="mx-auto grid max-w-[1600px] gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div className="min-w-0">
             <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase text-[var(--muted)]"><Clock3 size={12} />Change history</div>
@@ -253,7 +308,7 @@ export function ReviewWorkspace() {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {role === "REVIEWER" && pending && (
+            {canReview(role) && pending && (
               <>
                 <input
                   aria-label="Rejection reason"
@@ -265,17 +320,18 @@ export function ReviewWorkspace() {
                 <Button variant="danger" disabled={rejectMutation.isPending} onClick={() => rejectMutation.mutate()}><X size={15} />Reject</Button>
               </>
             )}
-            {role === "WRITER" && pending && (
+            {canSave(role) && pending && (
               <Button variant="secondary" disabled={!activeEdit || !editedContent.trim() || editedContent === activeEdit.content || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
                 {saveMutation.isPending ? <LoaderCircle className="animate-spin" size={15} /> : <Save size={15} />}Save Edit
               </Button>
             )}
-            {role === "APPROVER" && pending && (
+            {canReview(role) && pending && (
               <Button disabled={approveMutation.isPending} onClick={() => approveMutation.mutate()}>
                 {approveMutation.isPending ? <LoaderCircle className="animate-spin" size={15} /> : <CheckCheck size={15} />}Approve &amp; Apply
               </Button>
             )}
-            {!pending && <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]"><ShieldCheck size={14} />Review closed</span>}
+            {session.status !== "AWAITING_REVIEW" && <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]"><ShieldCheck size={14} />Review closed</span>}
+            {session.status === "AWAITING_REVIEW" && !pending && <span className="text-xs text-[var(--muted)]">Actions unavailable: no documentation patch was generated.</span>}
             {pending && !role && <span className="text-xs text-[var(--muted)]">Resolving role…</span>}
           </div>
         </div>

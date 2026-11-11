@@ -55,24 +55,25 @@ Run the API:
 python -m app.main --host 127.0.0.1 --port 8000
 ```
 
-The SQLite database defaults to `./data/documentation_pipeline.db`; override it with `DATABASE_URL`. Tables are created on startup. OpenAPI docs are available at `http://127.0.0.1:8000/docs`.
+The SQLite database defaults to `./data/documentation_pipeline.db`; override it with `DATABASE_URL`. Tables are created on startup, and existing SQLite databases are upgraded additively when the `impact_statement`, `change_summary`, `uncertainties`, or `tests_to_run` fields are missing. OpenAPI docs are available at `http://127.0.0.1:8000/docs`.
 
-Create a review by posting JSON to `/sessions` with `source_repo`, `docs_repo`, `base_revision`, `head_revision`, and `model_name`. The optional `provider` field defaults to `"ollama"` and accepts `"openrouter"`; `ollama_url` applies only to Ollama. OpenRouter requests require `OPENROUTER_API_KEY` in the API server environment. Include the two trusted-proxy headers. `POST /sessions/{id}/edit` accepts a `document_edit_id` and new `content`; `/approve` requires `APPROVER`; `/reject` requires `REVIEWER` or `APPROVER`.
+Create a review by posting JSON to `/sessions` with `source_repo`, `docs_repo`, `base_revision`, `head_revision`, and `model_name`. The optional `change_summary` field (up to 4,000 characters) gives the analyzer extra product context, which it verifies against the source diff. The optional `provider` field defaults to `"ollama"` and accepts `"openrouter"`; `ollama_url` applies only to Ollama. OpenRouter requests require `OPENROUTER_API_KEY` in the API server environment. Include the two trusted-proxy headers. `POST /sessions/{id}/edit` accepts a `document_edit_id` and new `content`; `/approve` and `/reject` are available to `REVIEWER` and `APPROVER`.
 
 ## Review Behavior
 
 - Source diffs are bounded to 100 files and 250 KB.
 - Documentation search is exact-term based and bounded to 1,000 files and 1 MB per file. Exceeding the scan limit stops for human investigation.
 - Model proposals must be valid JSON, cite supplied source evidence, and target a retrieved document section. The patch writer independently restricts targets to existing documentation files under the configured docs root.
+- A review session is created only when the pipeline produces a non-empty documentation patch. A no-update result is shown as having no reviewable patch; an invalid proposal or unverifiable edit is sent for human investigation instead of being presented as a successful review.
 - Previewing a patch does not modify files. Editing updates only the draft. Rejecting closes the review without writing. Approval checks that reviewed files have not changed since the preview and then applies the patch.
-- Roles are `WRITER` (create/edit), `REVIEWER` (edit/reject), and `APPROVER` (approve/reject). Every successful content edit records actor, previous content, new content, and timestamp.
+- Roles are `WRITER` (create/edit), `REVIEWER` (edit/approve/apply/reject), and `APPROVER` (approve/apply/reject). Every successful content edit records actor, previous content, new content, and timestamp. Rejection reasons are stored with the review session alongside its source diff and proposal for later evaluation and training-data curation; they are not automatically used to train the model.
 - Session diffs, repository paths, original patch snapshots, model response, proposal, edits, and audit events are persisted so review state survives process restarts.
 
 ## Current Limitations
 
 - Publishing currently applies approved changes to the docs working tree only. It does not create a commit, branch, pull request, or push to GitHub. The docs destination and publication policy still need to be selected.
 - There is no GitHub Actions/webhook trigger; runs are manual.
-- SQLite schema creation currently uses SQLAlchemy `create_all`; add and deploy Alembic migrations before evolving an existing production database.
+- SQLite schema creation uses SQLAlchemy `create_all` plus targeted additive migrations for review and proposal metadata fields; add and deploy Alembic migrations before further production schema changes.
 - Authentication is delegated to a trusted proxy; the proxy secret and header-stripping policy are security-critical.
 - Retrieval uses exact identifiers and changed file names, not embeddings or a vector database. Missing or ambiguous matches stop for human investigation.
 - The analyzer uses conservative file-type heuristics. It does not perform semantic OpenAPI compatibility analysis.

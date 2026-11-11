@@ -23,13 +23,12 @@ from app.api.schemas import (
 )
 from app.db.database import get_db
 from app.db.models import (
-	DocumentEdit as DocumentEditRecord,
 	EditAuditEvent,
 	Proposal as ProposalRecord,
 	ReviewSession as ReviewSessionRecord,
 	User,
 )
-from app.document_finder import DocumentSearchLimitError
+from app.document_finder import DocumentSearchLimitError, classify_document_kind
 from app.git_tools import GitCommandError, InvalidRevisionError
 from app.llm_client import (
 	LLMConfigurationError,
@@ -37,12 +36,13 @@ from app.llm_client import (
 	ProposalValidationError,
 	get_llm_client,
 )
-from app.models.types import EditAction, ProposalDecision, ReviewStatus, UserRole
+from app.models.types import ReviewStatus, UserRole
 from app.patch_writer import PatchError, StalePatchError
-from app.services.pipeline import PROMPT_VERSION, analyze_repository_change
+from app.services.pipeline import analyze_repository_change
 from app.services.repositories import RepositoryAccessError, RepositoryConfigurationError, validate_repository_paths
 from app.services.review import (
 	apply_review_patch,
+	persist_review_draft,
 	rebuild_review_patch,
 	restore_patch_snapshot,
 	serialize_patch_snapshot,
@@ -55,9 +55,7 @@ Reader = Annotated[User, Depends(get_current_user)]
 Writer = Annotated[User, Depends(require_roles(UserRole.WRITER))]
 Editor = Annotated[User, Depends(require_roles(UserRole.WRITER, UserRole.REVIEWER))]
 Reviewer = Annotated[User, Depends(require_roles(UserRole.REVIEWER, UserRole.APPROVER))]
-Approver = Annotated[User, Depends(require_roles(UserRole.APPROVER))]
-
-
+Approver = Annotated[User, Depends(require_roles(UserRole.REVIEWER, UserRole.APPROVER))]
 
 
 @router.get("", response_model=list[ReviewSessionSummaryResponse])
@@ -107,10 +105,10 @@ async def create_session(payload: CreateSessionRequest, database: Database, acto
 		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Repository path is invalid") from error
 	try:
 		model_client = get_llm_client(
-			provider=payload.provider or "ollama", 
-            model=payload.model_name, 
-            base_url=payload.ollama_url
-        )
+			provider=payload.provider or "ollama",
+			model=payload.model_name,
+			base_url=payload.ollama_url
+		)
 	except LLMConfigurationError as error:
 		raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 	try:
@@ -121,57 +119,44 @@ async def create_session(payload: CreateSessionRequest, database: Database, acto
 			payload.head_revision,
 			model_client,
 			model_name=payload.model_name,
+			database=database,
+			change_summary=payload.change_summary.strip() if payload.change_summary else None,
 		)
-	except (ModelRequestError, ProposalValidationError) as error:
-		print(f"DEBUG ERROR: {error}")
-		raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Local model request or proposal validation failed") from error
+	except ModelRequestError as error:
+		raise HTTPException(
+			status_code=status.HTTP_502_BAD_GATEWAY,
+			detail=f"{payload.provider.title()} model request failed: {error}",
+		) from error
+	except ProposalValidationError as error:
+		raise HTTPException(
+			status_code=status.HTTP_502_BAD_GATEWAY,
+			detail=f"Documentation proposal validation failed: {error}",
+		) from error
 	except (GitCommandError, InvalidRevisionError, DocumentSearchLimitError, PatchError, ValueError, OSError) as error:
 		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
 	if draft.outcome != "awaiting_review" or draft.proposal is None or draft.prepared_patch is None:
-		detail = draft.note or draft.analysis.rationale
 		if draft.outcome == "human_investigation":
-			detail = f"Human investigation required: {detail}"
+			reason = draft.note or "The system could not produce a verified documentation patch."
+			raise HTTPException(
+				status_code=status.HTTP_409_CONFLICT,
+				detail=f"Human investigation required: {reason}",
+			)
+		reason = draft.note or draft.analysis.rationale
 		raise HTTPException(
 			status_code=status.HTTP_409_CONFLICT,
-			detail=f"No reviewable patch was generated ({draft.outcome}): {detail}",
+			detail=f"No documentation patch was created: {reason}",
 		)
 
-	proposal = ProposalRecord(
-		model_name=payload.model_name,
-		prompt_version=PROMPT_VERSION,
-		decision=ProposalDecision(draft.proposal.decision),
-		rationale=draft.proposal.rationale,
-		raw_response=draft.raw_response or "",
-		edits=[
-			DocumentEditRecord(
-				file_path=edit.path,
-				section_heading=edit.section,
-				action=EditAction(edit.action),
-				content=edit.content,
-				evidence=list(edit.evidence),
-				start_line=edit.start_line,
-			)
-			for edit in draft.proposal.changes
-		],
-	)
-	record = ReviewSessionRecord(
-		source_commit=draft.source_diff.base_commit,
-		head_commit=draft.source_diff.head_commit,
-		status=ReviewStatus.AWAITING_REVIEW,
-		created_by=actor.id,
+	record = await persist_review_draft(
+		database,
+		draft,
+		actor_id=actor.id,
 		source_repo=source_repo,
 		docs_repo=docs_repo,
-		source_diff=draft.source_diff.patch,
-		changed_files=list(draft.analysis.changed_files),
-		evidence_refs=list(draft.analysis.evidence_refs),
-		analysis_decision=draft.analysis.decision,
-		analysis_rationale=draft.analysis.rationale,
-		patch_snapshot=serialize_patch_snapshot(draft.prepared_patch),
-		proposal=proposal,
+		model_name=payload.model_name,
+		change_summary=payload.change_summary.strip() if payload.change_summary else None,
 	)
-	database.add(record)
-	await database.commit()
 	return await _get_session_response(database, record.id)
 
 
@@ -222,6 +207,8 @@ async def approve_session(
 	record = await _load_session(database, session_id)
 	if record.status != ReviewStatus.AWAITING_REVIEW:
 		raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session is not awaiting review")
+	if record.patch_snapshot is None:
+		raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No patch available to approve")
 	try:
 		prepared_patch = restore_patch_snapshot(record.patch_snapshot)
 		await apply_review_patch(record.docs_repo, prepared_patch)
@@ -251,7 +238,7 @@ async def reject_session(
 		raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session is not awaiting review")
 	record.status = ReviewStatus.REJECTED
 	record.reviewed_by = actor.id
-	record.review_note = payload.reason if payload is not None else None
+	record.review_note = payload.reason.strip() if payload is not None and payload.reason and payload.reason.strip() else None
 	record.updated_at = datetime.now(timezone.utc)
 	await database.commit()
 	await database.refresh(record)
@@ -276,16 +263,29 @@ async def _load_session(database: AsyncSession, session_id: UUID) -> ReviewSessi
 
 async def _get_session_response(database: AsyncSession, session_id: UUID) -> ReviewSessionResponse:
 	record = await _load_session(database, session_id)
-	prepared_patch = restore_patch_snapshot(record.patch_snapshot)
-	patch_diff = "".join(file_patch.unified_diff for file_patch in prepared_patch.files)
-	original_by_path = {file_patch.path: file_patch.before for file_patch in prepared_patch.files}
+
+	prepared_patch = None
+	if record.patch_snapshot is not None:
+		prepared_patch = restore_patch_snapshot(record.patch_snapshot)
+
+	patch_diff = ""
+	original_by_path = {}
+	if prepared_patch is not None:
+		patch_diff = "".join(file_patch.unified_diff for file_patch in prepared_patch.files)
+		original_by_path = {file_patch.path: file_patch.before for file_patch in prepared_patch.files}
+
 	response = ReviewSessionResponse.model_validate(record)
 	proposal = response.proposal
 	if proposal is not None:
 		proposal = proposal.model_copy(
 			update={
 				"edits": [
-					edit.model_copy(update={"original_content": original_by_path.get(edit.file_path, "")})
+					edit.model_copy(
+						update={
+							"original_content": original_by_path.get(edit.file_path, ""),
+							"doc_kind": classify_document_kind(edit.file_path),
+						}
+					)
 					for edit in proposal.edits
 				]
 			}

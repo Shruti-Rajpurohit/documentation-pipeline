@@ -23,3 +23,5 @@ class PipelineDraft:
 	raw_response: str | None
 	outcome: PipelineOutcome
 	note: str = ""
+	technical_log: str | None = None
+	impact_statement: str | None = None

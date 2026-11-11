@@ -8,6 +8,12 @@ from pathlib import Path
 
 _DOCUMENTATION_EXTENSIONS = {".md", ".mdx", ".rst", ".adoc", ".asciidoc"}
 _EXCLUDED_DIRECTORIES = {".git", ".venv", "venv", "node_modules", "vendor", "build", "dist", "__pycache__"}
+_KIND_DIRECTORY_TOKENS = {
+	"api": {"api", "apis", "reference", "openapi", "swagger"},
+	"developer": {"developer", "developers", "dev", "sdk", "sdks", "contributing", "integration"},
+	"user": {"user", "users", "guide", "guides", "tutorial", "tutorials", "getting-started", "help"},
+	"blog": {"blog", "blogs", "posts", "changelog", "news", "announcements"},
+}
 _HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 _IDENTIFIER_PATTERN = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
 _LOW_SIGNAL_TERMS = {
@@ -36,6 +42,7 @@ class DocumentSection:
 	end_line: int
 	content: str
 	matched_terms: tuple[str, ...]
+	kind: str = "other"
 
 
 def find_candidate_sections(
@@ -80,7 +87,9 @@ def find_candidate_sections(
 			relative_path = path.relative_to(root).as_posix()
 			for section in _split_sections(relative_path, text):
 				matched_terms = tuple(
-					term for term in terms if _contains_term(section.content, term)
+					term
+					for term in terms
+					if _contains_term(section.content, term) or _contains_term(relative_path, term)
 				)
 				if matched_terms:
 					candidates.append(
@@ -93,6 +102,7 @@ def find_candidate_sections(
 								end_line=section.end_line,
 								content=section.content,
 								matched_terms=matched_terms,
+								kind=section.kind,
 							),
 						)
 					)
@@ -154,6 +164,7 @@ def list_document_section_index(
 					end_line=section.end_line,
 					content="",
 					matched_terms=(),
+					kind=section.kind,
 				)
 				for section in file_sections
 			]
@@ -193,12 +204,23 @@ def _contains_term(content: str, term: str) -> bool:
 	return re.search(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", content, re.IGNORECASE) is not None
 
 
+def classify_document_kind(path: str) -> str:
+	normalized = path.replace("\\", "/").lower()
+	parts = Path(normalized).parts
+	stem = Path(normalized).stem
+	for kind, tokens in _KIND_DIRECTORY_TOKENS.items():
+		if any(part in tokens for part in parts[:-1]) or any(token in stem for token in tokens):
+			return kind
+	return "other"
+
+
 def _split_sections(path: str, text: str) -> list[DocumentSection]:
 	lines = text.splitlines()
 	sections: list[DocumentSection] = []
 	heading = Path(path).name
 	start_line = 1
 	content_lines: list[str] = []
+	kind = classify_document_kind(path)
 
 	def append_section(end_line: int) -> None:
 		content = "\n".join(content_lines).strip()
@@ -211,6 +233,7 @@ def _split_sections(path: str, text: str) -> list[DocumentSection]:
 					end_line=end_line,
 					content=content,
 					matched_terms=(),
+					kind=kind,
 				)
 			)
 
@@ -232,4 +255,19 @@ def _rank_candidates(
 	limit: int,
 ) -> list[DocumentSection]:
 	candidates.sort(key=lambda candidate: (-candidate[0], candidate[1].path, candidate[1].start_line))
-	return [section for _, section in candidates[:limit]]
+	selected: list[DocumentSection] = []
+	seen_kinds: set[str] = set()
+	deferred: list[DocumentSection] = []
+	for _, section in candidates:
+		if section.kind not in seen_kinds:
+			selected.append(section)
+			seen_kinds.add(section.kind)
+		else:
+			deferred.append(section)
+		if len(selected) >= limit:
+			return selected
+	for section in deferred:
+		selected.append(section)
+		if len(selected) >= limit:
+			break
+	return selected

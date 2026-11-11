@@ -2,6 +2,8 @@
 
 :root {
   color-scheme: light;
+  --font-plex-sans: ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-plex-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --background: #eef1f0;
   --surface: #fbfcfb;
   --surface-raised: #ffffff;

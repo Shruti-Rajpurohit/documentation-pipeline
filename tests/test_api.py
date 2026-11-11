@@ -148,6 +148,26 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 			base_url="http://127.0.0.1:11434",
 		)
 
+	async def test_create_session_sends_and_persists_optional_change_summary(self) -> None:
+		summary = " Currency is now required for payments. "
+		payload = {
+			"source_repo": str(self.source),
+			"docs_repo": str(self.docs),
+			"base_revision": "base123",
+			"head_revision": "head456",
+			"model_name": "local-model:version",
+			"change_summary": summary,
+		}
+		with (
+			patch("app.api.routes.analyze_repository_change", new=AsyncMock(return_value=self.draft)) as analyze,
+			patch.dict(os.environ, {"REPOSITORY_ROOTS": str(self.root)}),
+		):
+			response = await self.client.post("/sessions", json=payload)
+
+		self.assertEqual(response.status_code, 201, response.text)
+		self.assertEqual(response.json()["change_summary"], summary.strip())
+		self.assertEqual(analyze.await_args.kwargs["change_summary"], summary.strip())
+
 	async def test_human_investigation_is_not_reported_as_model_gateway_error(self) -> None:
 		draft = replace(
 			self.draft,
@@ -204,6 +224,8 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 		self.assertEqual(fetched.json()["id"], session_id)
 		self.assertEqual(fetched.json()["proposal"]["model_name"], "local-model:version")
 		self.assertIn("Old behavior.", fetched.json()["proposal"]["edits"][0]["original_content"])
+		self.assertIn("Updated behavior.", fetched.json()["patch_diff"])
+		self.assertNotIn("createPayment", fetched.json()["patch_diff"])
 
 		listed = await self.client.get("/sessions", params={"status": "AWAITING_REVIEW", "search": "head456"})
 		self.assertEqual(listed.status_code, 200, listed.text)
@@ -245,7 +267,20 @@ class ApiSessionTests(unittest.IsolatedAsyncioTestCase):
 		self.assertEqual(rejected.status_code, 200, rejected.text)
 		self.assertEqual(rejected.json()["status"], "REJECTED")
 		self.assertEqual(rejected.json()["review_note"], "Needs more product context.")
+		fetched = await self.client.get(f"/sessions/{created['id']}")
+		self.assertEqual(fetched.json()["review_note"], "Needs more product context.")
 		self.assertIn("Old behavior.", (self.docs / "docs" / "api.md").read_text(encoding="utf-8"))
+
+	async def test_reviewer_can_approve_and_apply_patch(self) -> None:
+		created = await self._post_session()
+		self.actor_role = UserRole.REVIEWER
+
+		approved = await self.client.post(f"/sessions/{created['id']}/approve")
+
+		self.assertEqual(approved.status_code, 200, approved.text)
+		self.assertEqual(approved.json()["status"], "APPROVED")
+		self.assertEqual(approved.json()["reviewed_by"], 2)
+		self.assertIn("Updated behavior.", (self.docs / "docs" / "api.md").read_text(encoding="utf-8"))
 
 	async def test_validation_errors_are_clean_json(self) -> None:
 		response = await self.client.post("/sessions", json={"unexpected": "field"})

@@ -24,7 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { Input, Textarea } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 type SortKey = "id" | "source_commit" | "status" | "creator" | "updated_at";
@@ -58,6 +58,7 @@ function CreateSessionDialog() {
     head_revision: "HEAD",
     model_name: "",
     provider: "ollama",
+    change_summary: "",
   });
   const queryClient = useQueryClient();
   const router = useRouter();
@@ -72,6 +73,10 @@ function CreateSessionDialog() {
     onError: (error) => {
       if (error instanceof ApiRequestError && error.status === 409 && error.message.includes("Human investigation required")) {
         toast.error("Human investigation required", { description: error.message });
+        return;
+      }
+      if (error instanceof ApiRequestError && error.status === 409 && error.message.includes("No documentation patch was created")) {
+        toast.info("No reviewable documentation patch", { description: error.message });
         return;
       }
       toast.error("Could not create session", { description: error.message });
@@ -139,6 +144,16 @@ function CreateSessionDialog() {
               OpenRouter uses the server-side OPENROUTER_API_KEY environment variable.
             </p>
           )}
+          <label className="grid gap-1.5 text-xs font-semibold text-[var(--muted)]">
+            Change summary (optional)
+            <Textarea
+              maxLength={4000}
+              value={form.change_summary ?? ""}
+              onChange={(event) => update("change_summary", event.target.value)}
+              placeholder="Briefly describe the product behavior or intent behind these changes."
+            />
+            <span className="font-normal">This helps focus analysis; the model still verifies claims against the source changes.</span>
+          </label>
           <div className="mt-1 flex justify-end gap-2 border-t border-[var(--border)] pt-4">
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={mutation.isPending}>

@@ -145,20 +145,16 @@ class ParseProposalTests(unittest.TestCase):
                 self.allowed_evidence,
             )
 
-    def test_accepts_evidence_that_does_not_match_git_refs(self) -> None:
+    def test_rejects_evidence_that_does_not_match_git_refs(self) -> None:
         change = json.loads(self._response())["changes"][0]
         change["evidence"] = ["the authentication branch adds this behavior"]
 
-        proposal = parse_proposal(
-            self._response(changes=[change]),
-            self.allowed_sections,
-            self.allowed_evidence,
-        )
-
-        self.assertEqual(
-            proposal.changes[0].evidence,
-            ("the authentication branch adds this behavior",),
-        )
+        with self.assertRaises(ProposalValidationError):
+            parse_proposal(
+                self._response(changes=[change]),
+                self.allowed_sections,
+                self.allowed_evidence,
+            )
 
     def test_rejects_completely_empty_evidence_list(self) -> None:
         change = json.loads(self._response())["changes"][0]
@@ -208,17 +204,16 @@ class ParseProposalTests(unittest.TestCase):
                         self.allowed_evidence,
                     )
 
-    def test_accepts_nonempty_evidence_list_with_blank_string(self) -> None:
+    def test_rejects_nonempty_evidence_list_with_blank_string(self) -> None:
         change = json.loads(self._response())["changes"][0]
         change["evidence"] = [""]
 
-        proposal = parse_proposal(
-            self._response(changes=[change]),
-            self.allowed_sections,
-            self.allowed_evidence,
-        )
-
-        self.assertEqual(proposal.changes[0].evidence, ("",))
+        with self.assertRaises(ProposalValidationError):
+            parse_proposal(
+                self._response(changes=[change]),
+                self.allowed_sections,
+                self.allowed_evidence,
+            )
 
 
 class LLMClientTests(unittest.TestCase):
@@ -266,6 +261,7 @@ class LLMClientTests(unittest.TestCase):
 			{
 				"model": "vendor/model",
 				"messages": [{"role": "user", "content": "Return JSON"}],
+				"response_format": {"type": "json_object"},
 			},
 		)
 

@@ -36,6 +36,22 @@ class PatchWriterTests(unittest.TestCase):
         self.assertIn("+New behavior.", prepared.files[0].unified_diff)
         self.assertIn("Keep this.", prepared.files[0].after)
 
+    def test_replace_preserves_separator_before_next_section(self) -> None:
+        before = self.doc.read_text(encoding="utf-8")
+        edit = DocumentEdit(
+            path="docs/api.md",
+            section="API",
+            action="replace",
+            content="Old behavior.",
+            evidence=("head:src/api.py",),
+            start_line=1,
+        )
+
+        prepared = prepare_patch(self.repo, [edit])
+
+        self.assertEqual(prepared.files[0].after, before)
+        self.assertEqual(prepared.files[0].unified_diff, "")
+
     def test_create_appends_new_heading_and_content(self) -> None:
         before = self.doc.read_text(encoding="utf-8")
         edit = DocumentEdit(

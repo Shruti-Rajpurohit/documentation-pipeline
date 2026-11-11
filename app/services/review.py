@@ -3,8 +3,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.db.models import DocumentEdit as DocumentEditRecord, ReviewSession as ReviewSessionRecord
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import (
+	DocumentEdit as DocumentEditRecord,
+	Proposal as ProposalRecord,
+	ReviewSession as ReviewSessionRecord,
+)
 from app.llm_client import DocumentEdit as ProposedDocumentEdit
+from app.models.pipeline import PipelineDraft
+from app.models.types import EditAction, ProposalDecision, ReviewStatus
 from app.patch_writer import (
 	FilePatch,
 	PatchError,
@@ -12,6 +20,7 @@ from app.patch_writer import (
 	apply_approved_patch,
 	prepare_patch_from_originals,
 )
+from app.services.pipeline import PROMPT_VERSION
 
 
 def serialize_patch_snapshot(prepared_patch: PreparedPatch) -> list[dict[str, str]]:
@@ -79,3 +88,57 @@ def rebuild_review_patch(
 
 async def apply_review_patch(docs_repo: str, prepared_patch: PreparedPatch) -> None:
 	await asyncio.to_thread(apply_approved_patch, docs_repo, prepared_patch, approved=True)
+
+
+async def persist_review_draft(
+	database: AsyncSession,
+	draft: PipelineDraft,
+	*,
+	actor_id: int,
+	source_repo: str,
+	docs_repo: str,
+	model_name: str,
+	change_summary: str | None = None,
+) -> ReviewSessionRecord:
+	if draft.proposal is None or draft.prepared_patch is None:
+		raise PatchError("Cannot persist a review without a prepared documentation patch")
+	proposal = ProposalRecord(
+		model_name=model_name,
+		prompt_version=PROMPT_VERSION,
+		decision=ProposalDecision(draft.proposal.decision),
+		rationale=draft.proposal.rationale,
+		raw_response=draft.raw_response or "",
+		uncertainties=list(draft.proposal.uncertainties),
+		tests_to_run=list(draft.proposal.tests_to_run),
+		edits=[
+			DocumentEditRecord(
+				file_path=edit.path,
+				section_heading=edit.section,
+				action=EditAction(edit.action),
+				content=edit.content,
+				evidence=list(edit.evidence),
+				start_line=edit.start_line,
+			)
+			for edit in draft.proposal.changes
+		],
+	)
+	record = ReviewSessionRecord(
+		source_commit=draft.source_diff.base_commit,
+		head_commit=draft.source_diff.head_commit,
+		status=ReviewStatus.AWAITING_REVIEW,
+		created_by=actor_id,
+		source_repo=source_repo,
+		docs_repo=docs_repo,
+		source_diff=draft.source_diff.patch,
+		changed_files=list(draft.analysis.changed_files),
+		evidence_refs=list(draft.analysis.evidence_refs),
+		analysis_decision=draft.analysis.decision,
+		analysis_rationale=draft.analysis.rationale,
+		impact_statement=draft.impact_statement,
+		change_summary=change_summary,
+		patch_snapshot=serialize_patch_snapshot(draft.prepared_patch),
+		proposal=proposal,
+	)
+	database.add(record)
+	await database.commit()
+	return record

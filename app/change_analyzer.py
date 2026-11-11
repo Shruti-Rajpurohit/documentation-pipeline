@@ -61,6 +61,7 @@ def analyze_change(git_diff: GitDiff) -> ChangeAnalysis:
 		rationale = "The selected revisions contain no changed files."
 	else:
 		categories = {_classify_path(path) for path in changed_files}
+
 		if categories == {"documentation"}:
 			decision = "no_update"
 			rationale = "Only documentation files changed; no product-source documentation review is needed."
@@ -71,8 +72,8 @@ def analyze_change(git_diff: GitDiff) -> ChangeAnalysis:
 			decision = "human_investigation"
 			rationale = "The change includes unfamiliar or test-only files, so its documentation impact is unclear."
 		else:
-			decision = "update_required"
-			rationale = "Product source, API schema, or configuration changed and should be checked for documentation impact."
+			decision = "human_investigation"
+			rationale = "The change includes files whose documentation impact cannot be classified safely."
 
 	return ChangeAnalysis(
 		decision=decision,

@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
-from app.db.database import Base, configure_engine
+from app.db.database import Base, configure_engine, migrate_sqlite_schema
 from app.db.models import DocumentEdit, EditAuditEvent, Proposal, ReviewSession, User
 from app.models.types import EditAction, ProposalDecision, ReviewStatus, UserRole
 
@@ -109,6 +109,60 @@ class DatabaseModelTests(unittest.IsolatedAsyncioTestCase):
 			)
 			with self.assertRaises(IntegrityError):
 				await session.commit()
+
+	async def test_sqlite_migration_adds_missing_columns_without_losing_rows(self) -> None:
+		migration_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+		try:
+			async with migration_engine.begin() as connection:
+				await connection.exec_driver_sql(
+					"CREATE TABLE review_sessions (id TEXT PRIMARY KEY, summary TEXT)"
+				)
+				await connection.exec_driver_sql(
+					"CREATE TABLE proposals (id INTEGER PRIMARY KEY, summary TEXT)"
+				)
+				await connection.exec_driver_sql(
+					"INSERT INTO review_sessions (id, summary) VALUES ('session-1', 'preserve me')"
+				)
+				await connection.exec_driver_sql(
+					"INSERT INTO proposals (id, summary) VALUES (1, 'keep proposal')"
+				)
+				await connection.run_sync(migrate_sqlite_schema)
+				result = await connection.exec_driver_sql(
+					"SELECT id, summary, impact_statement, change_summary FROM review_sessions"
+				)
+				row = result.one()
+				proposal_result = await connection.exec_driver_sql(
+					"SELECT id, summary, uncertainties, tests_to_run FROM proposals"
+				)
+				proposal_row = proposal_result.one()
+
+			self.assertEqual(row, ("session-1", "preserve me", None, None))
+			self.assertEqual(proposal_row, (1, "keep proposal", "[]", "[]"))
+			async with migration_engine.begin() as connection:
+				await connection.run_sync(migrate_sqlite_schema)
+				columns = await connection.exec_driver_sql("PRAGMA table_info(review_sessions)")
+				proposal_columns = await connection.exec_driver_sql("PRAGMA table_info(proposals)")
+				review_session_column_names = [info[1] for info in columns.fetchall()]
+				proposal_column_names = [info[1] for info in proposal_columns.fetchall()]
+
+			self.assertEqual(
+				review_session_column_names.count("impact_statement"),
+				1,
+			)
+			self.assertEqual(
+				review_session_column_names.count("change_summary"),
+				1,
+			)
+			self.assertEqual(
+				proposal_column_names.count("uncertainties"),
+				1,
+			)
+			self.assertEqual(
+				proposal_column_names.count("tests_to_run"),
+				1,
+			)
+		finally:
+			await migration_engine.dispose()
 
 
 if __name__ == "__main__":

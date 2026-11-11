@@ -1,6 +1,7 @@
 export type UserRole = "WRITER" | "REVIEWER" | "APPROVER";
 export type ReviewStatus = "AWAITING_REVIEW" | "APPROVED" | "REJECTED";
 export type EditAction = "replace" | "append" | "create";
+export type DocumentKind = "api" | "developer" | "user" | "blog" | "other";
 export type ProposalDecision = "update_required" | "no_update" | "human_investigation";
 export type LLMProvider = "ollama" | "openrouter";
 
@@ -19,6 +20,7 @@ export interface DocumentEdit {
   original_content: string;
   evidence: string[];
   start_line: number | null;
+  doc_kind: DocumentKind;
 }
 
 export interface Proposal {
@@ -28,6 +30,8 @@ export interface Proposal {
   decision: ProposalDecision;
   rationale: string;
   raw_response: string;
+  uncertainties: string[];
+  tests_to_run: string[];
   edits: DocumentEdit[];
 }
 
@@ -59,6 +63,8 @@ export interface ReviewSession extends ReviewSessionSummary {
   evidence_refs: string[];
   analysis_decision: string;
   analysis_rationale: string;
+  impact_statement: string | null;
+  change_summary: string | null;
   patch_diff: string | null;
   proposal: Proposal | null;
   audit_events: AuditEvent[];
@@ -74,6 +80,7 @@ export interface CreateSessionInput {
   model_name: string;
   provider?: LLMProvider;
   ollama_url?: string;
+  change_summary?: string;
 }
 
 export interface ApiErrorShape {

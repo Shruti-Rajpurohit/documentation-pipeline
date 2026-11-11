@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
+from app.api.webhooks import router as webhook_router
 from app.api.schemas import ErrorResponse, ValidationErrorResponse, ValidationIssue
 from app.db.database import close_db, init_db
 
@@ -31,10 +32,17 @@ app = FastAPI(
 	lifespan=lifespan,
 )
 app.include_router(router)
+app.include_router(webhook_router)
+
+
+@app.get("/healthz", tags=["health"])
+async def healthz() -> dict[str, str]:
+	return {"status": "ok"}
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, error: RequestValidationError) -> JSONResponse:
+	logger.info("Request validation failed: %s", error.errors())
 	response = ValidationErrorResponse(
 		detail="Request validation failed",
 		errors=[

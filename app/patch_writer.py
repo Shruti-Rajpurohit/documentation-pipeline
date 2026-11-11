@@ -114,6 +114,37 @@ def prepare_patch_from_originals(
 	return PreparedPatch(files=tuple(file_patches))
 
 
+def serialize_patch_snapshot(patch: PreparedPatch | None) -> list[dict[str, str]] | None:
+	if patch is None:
+		return None
+	return [
+		{
+			"path": fp.path,
+			"sha256": fp.original_sha256,
+			"before": fp.before,
+			"after": fp.after,
+			"diff": fp.unified_diff,
+		}
+		for fp in patch.files
+	]
+
+
+def restore_patch_snapshot(snapshot: list[dict[str, str]] | None) -> PreparedPatch | None:
+	if snapshot is None:
+		return None
+	files = [
+		FilePatch(
+			path=item["path"],
+			original_sha256=item["sha256"],
+			before=item["before"],
+			after=item["after"],
+			unified_diff=item["diff"],
+		)
+		for item in snapshot
+	]
+	return PreparedPatch(files=tuple(files))
+
+
 def apply_approved_patch(
 	repo_path: str | Path,
 	prepared_patch: PreparedPatch,
@@ -208,6 +239,11 @@ def _apply_edit(text: str, path: str, edit: DocumentEdit) -> str:
 				break
 		heading_line = lines[start].rstrip("\r\n")
 
+	separator_start = end
+	while separator_start > start and not lines[separator_start - 1].strip():
+		separator_start -= 1
+	separator_lines = lines[separator_start:end]
+
 	replacement_content = edit.content.strip()
 	if not replacement_content:
 		raise PatchError(f"Section content cannot be empty: {path} / {edit.section}")
@@ -219,6 +255,7 @@ def _apply_edit(text: str, path: str, edit: DocumentEdit) -> str:
 	if heading_line:
 		replacement.extend([heading_line, "\n", "\n"])
 	replacement.extend([replacement_content, "\n"])
+	replacement.extend(separator_lines)
 	lines[start:end] = replacement
 	return "".join(lines)
 
